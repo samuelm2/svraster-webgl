@@ -4,7 +4,10 @@
 export interface PLYData {
   vertices: Float32Array;    // Position data (x, y, z)
   colors: Float32Array;      // Color data from f_dc fields
+  octlevels?: Uint8Array;    // Optional octlevel data for scaling
   vertexCount: number;
+  sceneCenter?: [number, number, number]; // Optional scene center
+  sceneExtent?: number;      // Optional scene extent as a single value
 }
 
 export class LoadPLY {
@@ -71,6 +74,36 @@ export class LoadPLY {
     const header = headerText.substring(0, headerEndIndex);
     const lines = header.split('\n');
     
+    // Extract scene center and extent from comments
+    let sceneCenter: [number, number, number] | undefined;
+    let sceneExtent: number | undefined;
+    
+    for (const line of lines) {
+      const trimmed = line.trim();
+      
+      // Look for scene center in comments
+      if (trimmed.startsWith('comment scene_center ')) {
+        const parts = trimmed.substring('comment scene_center '.length).trim().split(/\s+/);
+        if (parts.length >= 3) {
+          sceneCenter = [
+            parseFloat(parts[0]),
+            parseFloat(parts[1]),
+            parseFloat(parts[2])
+          ];
+          console.log(`Found scene center: [${sceneCenter}]`);
+        }
+      }
+      
+      // Look for scene extent in comments (single value)
+      if (trimmed.startsWith('comment scene_extent ')) {
+        const value = parseFloat(trimmed.substring('comment scene_extent '.length).trim());
+        if (!isNaN(value)) {
+          sceneExtent = value;
+          console.log(`Found scene extent: ${sceneExtent}`);
+        }
+      }
+    }
+    
     // Check that this is a valid PLY file
     if (lines[0].trim() !== 'ply') {
       throw new Error('Invalid PLY file: Does not start with "ply"');
@@ -112,6 +145,15 @@ export class LoadPLY {
         !properties.some(p => p.name === 'f_dc_1') || 
         !properties.some(p => p.name === 'f_dc_2')) {
       throw new Error('PLY file missing required color properties (f_dc_0, f_dc_1, f_dc_2)');
+    }
+    
+    // Check if the file has octlevel property
+    const hasOctlevel = properties.some(p => p.name === 'octlevel');
+    let octlevels: Uint8Array | undefined;
+    
+    if (hasOctlevel) {
+      octlevels = new Uint8Array(vertexCount);
+      console.log('File has octlevel property');
     }
     
     // Calculate data offsets for binary reading
@@ -176,6 +218,12 @@ export class LoadPLY {
       colors[colorIndex + 2] = dataView.getFloat32(vertexOffset + propertyOffsets['f_dc_2'], true);
       colors[colorIndex + 3] = 1.0; // Alpha channel (full opacity)
       
+      // Read octlevel if present
+      if (hasOctlevel && octlevels && propertyOffsets['octlevel'] !== undefined) {
+        // Octlevel is typically a uchar/char (1 byte)
+        octlevels[i] = dataView.getUint8(vertexOffset + propertyOffsets['octlevel']);
+      }
+      
       // For debugging, log a few vertices
       if (i < 5) {
         console.log(`Vertex ${i}: (${vertices[vertexIndex]}, ${vertices[vertexIndex + 1]}, ${vertices[vertexIndex + 2]})`);
@@ -186,7 +234,10 @@ export class LoadPLY {
     return {
       vertices,
       colors,
-      vertexCount
+      octlevels,
+      vertexCount,
+      sceneCenter,
+      sceneExtent
     };
   }
 } 

@@ -18,7 +18,7 @@ export class Camera {
   private fieldOfView: number = 45 * Math.PI / 180; // in radians
   private aspectRatio: number = 1.0;
   private nearClip: number = 0.1;
-  private farClip: number = 100.0;
+  private farClip: number = 1000.0;
   
   constructor() {
     this.updateViewMatrix();

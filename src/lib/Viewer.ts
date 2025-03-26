@@ -29,6 +29,12 @@ export class Viewer {
   // Rendering flags
   private useInstanceColors: boolean = false;
 
+  // Scene properties for scaling calculation
+  private sceneCenter: [number, number, number] = [0, 0, 0];
+  private sceneExtent: number = 1.0;
+  private instanceScaleBuffer: WebGLBuffer | null = null;
+  private baseVoxelSize: number = 0.01;
+
   constructor(containerId: string) {
     // Create canvas element
     this.canvas = document.createElement('canvas');
@@ -107,12 +113,13 @@ export class Viewer {
   private initShaders(): void {
     const gl = this.gl!;
     
-    // Updated vertex shader optimized for instanced rendering
+    // Updated vertex shader with instance scaling
     const vsSource = `#version 300 es
       in vec4 aVertexPosition;
       in vec4 aVertexColor;
       in vec4 aInstanceOffset;
       in vec4 aInstanceColor;
+      in float aInstanceScale;  // New attribute for instance scale
       
       uniform mat4 uProjectionMatrix;
       uniform mat4 uViewMatrix;
@@ -121,8 +128,11 @@ export class Viewer {
       out vec4 vColor;
       
       void main() {
-        // Position is vertex position + instance offset (xyz only)
-        vec4 instancePosition = aVertexPosition + vec4(aInstanceOffset.xyz, 0.0);
+        // Scale the vertex position by instance scale
+        vec4 scaledPosition = vec4(aVertexPosition.xyz * aInstanceScale, aVertexPosition.w);
+        
+        // Position is scaled vertex position + instance offset
+        vec4 instancePosition = scaledPosition + vec4(aInstanceOffset.xyz, 0.0);
         gl_Position = uProjectionMatrix * uViewMatrix * instancePosition;
         
         // Use instance color if enabled, otherwise use vertex color
@@ -381,7 +391,11 @@ export class Viewer {
   /**
    * Load a point cloud from positions and colors
    */
-  public loadPointCloud(positions: Float32Array, colors?: Float32Array): void {
+  public loadPointCloud(
+    positions: Float32Array, 
+    colors?: Float32Array,
+    octlevels?: Uint8Array  // Add optional octlevel parameter
+  ): void {
     const gl = this.gl!;
     
     // Create a VAO for the point cloud
@@ -389,11 +403,11 @@ export class Viewer {
     gl.bindVertexArray(this.vao);
     
     // For very large point clouds, use smaller cubes
-    const cubeSize = 0.005; // Smaller cube size for dense point clouds
+    const cubeSize = 1.0; // This is now a base size that will be scaled by octlevel
     this.initCubeGeometry(cubeSize);
     
     // For very large point clouds, limit the number of instances
-    const maxInstances = 500000; // Limit for better performance
+    const maxInstances = 2000000; // Limit for better performance
     
     if (positions.length / 3 > maxInstances) {
       console.warn(`Point cloud has ${positions.length / 3} points, limiting to ${maxInstances} for performance`);
@@ -446,6 +460,48 @@ export class Viewer {
     // Enable instancing
     gl.vertexAttribDivisor(instanceAttributeLocation, 1);
     
+    // Create and set up scale buffer if octlevels are provided
+    if (octlevels && octlevels.length > 0) {
+      // Calculate scales based on octlevels
+      const scales = new Float32Array(octlevels.length);
+      
+      for (let i = 0; i < octlevels.length; i++) {
+        // Calculate voxel size based on the formula: voxel_size = world_size * 2^(-octlevel)
+        const octlevel = octlevels[i];
+        // Use the base voxel size and simple scale factor based on octlevel
+        const scale = this.baseVoxelSize * Math.pow(2, -octlevel);
+        scales[i] = scale;
+      }
+      
+      // Create scale buffer
+      this.instanceScaleBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceScaleBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, scales, gl.STATIC_DRAW);
+      
+      // Set up instance scale attribute
+      const instanceScaleLocation = gl.getAttribLocation(this.program!, 'aInstanceScale');
+      if (instanceScaleLocation !== -1) { // Check if the attribute exists in the shader
+        gl.enableVertexAttribArray(instanceScaleLocation);
+        gl.vertexAttribPointer(
+          instanceScaleLocation,
+          1,        // 1 component per scale (just a single float)
+          gl.FLOAT, // data type
+          false,    // no normalization
+          0,        // stride
+          0         // offset
+        );
+        
+        // Enable instancing for scales
+        gl.vertexAttribDivisor(instanceScaleLocation, 1);
+        
+        const minOctlevel = octlevels.reduce((min, val) => val < min ? val : min, octlevels[0]);
+        const maxOctlevel = octlevels.reduce((max, val) => val > max ? val : max, octlevels[0]);
+        console.log(`Loaded ${scales.length} scales with octlevels from ${minOctlevel} to ${maxOctlevel}`);
+      } else {
+        console.warn('Shader does not have aInstanceScale attribute. Make sure shader is updated.');
+      }
+    }
+    
     // Store instance colors if provided
     if (colors) {
       this.instanceColorBuffer = gl.createBuffer();
@@ -479,17 +535,6 @@ export class Viewer {
     gl.bindVertexArray(null);
     
     console.log(`Loaded point cloud with ${this.instanceCount} points`);
-  }
-  
-  /**
-   * Set the number of instances to display
-   */
-  public setInstanceCount(count: number): void {
-    if (count < 1) count = 1;
-    this.instanceCount = count;
-    
-    // Re-initialize buffers to update instance data
-    this.initBuffers();
   }
   
   /**
@@ -553,6 +598,7 @@ export class Viewer {
       if (this.indexBuffer) gl.deleteBuffer(this.indexBuffer);
       if (this.instanceBuffer) gl.deleteBuffer(this.instanceBuffer);
       if (this.instanceColorBuffer) gl.deleteBuffer(this.instanceColorBuffer);
+      if (this.instanceScaleBuffer) gl.deleteBuffer(this.instanceScaleBuffer);
       
       // Delete VAO
       if (this.vao) gl.deleteVertexArray(this.vao);
@@ -560,5 +606,16 @@ export class Viewer {
       // Delete program and shaders
       if (this.program) gl.deleteProgram(this.program);
     }
+  }
+
+  /**
+   * Set scene parameters from PLY file header
+   */
+  public setSceneParameters(center: [number, number, number], extent: number): void {
+    this.sceneCenter = center;
+    this.sceneExtent = extent;
+    this.baseVoxelSize = extent; // Use the extent as the base voxel size
+    
+    console.log(`Scene center: [${center}], extent: ${extent}, base voxel size: ${this.baseVoxelSize}`);
   }
 }
