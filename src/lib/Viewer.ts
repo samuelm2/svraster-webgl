@@ -34,6 +34,7 @@ export class Viewer {
   private sceneExtent: number = 1.0;
   private instanceScaleBuffer: WebGLBuffer | null = null;
   private baseVoxelSize: number = 0.01;
+  private instanceGridValuesBuffer: WebGLBuffer | null = null; // New buffer for grid density values
 
   constructor(containerId: string) {
     // Create canvas element
@@ -113,19 +114,26 @@ export class Viewer {
   private initShaders(): void {
     const gl = this.gl!;
     
-    // Updated vertex shader with instance scaling
+    // Updated vertex shader to pass grid values to fragment shader
     const vsSource = `#version 300 es
       in vec4 aVertexPosition;
       in vec4 aVertexColor;
       in vec4 aInstanceOffset;
       in vec4 aInstanceColor;
-      in float aInstanceScale;  // New attribute for instance scale
+      in float aInstanceScale;
+      in vec4 aGridValues1;   // First 4 grid values (0-3)
+      in vec4 aGridValues2;   // Second 4 grid values (4-7)
       
       uniform mat4 uProjectionMatrix;
       uniform mat4 uViewMatrix;
       uniform bool uUseInstanceColors;
       
       out vec4 vColor;
+      out vec3 vWorldPos;     // World position of the vertex
+      out vec4 vGridValues1;  // Passing grid values to fragment shader
+      out vec4 vGridValues2;
+      out float vScale;       // Pass scale to fragment shader
+      out vec3 vVoxelCenter;  // Center of the voxel in world space
       
       void main() {
         // Scale the vertex position by instance scale
@@ -133,21 +141,153 @@ export class Viewer {
         
         // Position is scaled vertex position + instance offset
         vec4 instancePosition = scaledPosition + vec4(aInstanceOffset.xyz, 0.0);
+        
+        // Calculate final position
         gl_Position = uProjectionMatrix * uViewMatrix * instancePosition;
+        
+        // Pass world position of the vertex
+        vWorldPos = instancePosition.xyz;
+        
+        // Calculate and pass voxel center (instance position = center of voxel)
+        vVoxelCenter = aInstanceOffset.xyz;
+        
+        // Pass grid values to fragment shader
+        vGridValues1 = aGridValues1;
+        vGridValues2 = aGridValues2;
+        
+        // Pass scale to fragment shader
+        vScale = aInstanceScale;
         
         // Use instance color if enabled, otherwise use vertex color
         vColor = uUseInstanceColors ? aInstanceColor : aVertexColor;
       }
     `;
     
-    // Fragment shader
+    // Fragment shader with trilinear interpolation for density field values
+    // Now working entirely in world space
     const fsSource = `#version 300 es
       precision mediump float;
+      
       in vec4 vColor;
+      in vec3 vWorldPos;      // World position of the vertex
+      in vec4 vGridValues1;   // First 4 grid values (corners 0-3)
+      in vec4 vGridValues2;   // Second 4 grid values (corners 4-7)
+      in float vScale;        // Scale of the voxel
+      in vec3 vVoxelCenter;   // Center of the voxel in world space
+      
+      uniform vec3 uCameraPosition; // Camera position in world space
+      
       out vec4 fragColor;
       
+      // Calculate world space position of a voxel corner
+      vec3 getCornerWorldPos(vec3 center, float scale, vec3 cornerOffset) {
+        // Convert from [-0.5, 0.5] local space to world space
+        return center + (cornerOffset * scale);
+      }
+      
+      // Trilinear interpolation in world space
+      float trilinearInterpolation(vec3 samplePos, vec3 voxelCenter, float voxelScale, vec4 values1, vec4 values2) {
+        // Calculate the normalized position within the voxel (0-1 range)
+        // First get min/max corners in world space
+        vec3 boxMin = voxelCenter - vec3(voxelScale * 0.5);
+        vec3 boxMax = voxelCenter + vec3(voxelScale * 0.5);
+        
+        // Normalize the sample position to 0-1 within the box bounds
+        vec3 normalizedPos = (samplePos - boxMin) / (boxMax - boxMin);
+        
+        // Clamp to ensure we're in the 0-1 range
+        normalizedPos = clamp(normalizedPos, 0.0, 1.0);
+        
+        // Get the corner values
+        float c000 = values1.x;  // Corner [0,0,0] - grid0_value
+        float c001 = values1.y;  // Corner [0,0,1] - grid1_value
+        float c010 = values1.z;  // Corner [0,1,0] - grid2_value
+        float c011 = values1.w;  // Corner [0,1,1] - grid3_value
+        float c100 = values2.x;  // Corner [1,0,0] - grid4_value
+        float c101 = values2.y;  // Corner [1,0,1] - grid5_value
+        float c110 = values2.z;  // Corner [1,1,0] - grid6_value
+        float c111 = values2.w;  // Corner [1,1,1] - grid7_value
+        
+        // Trilinear interpolation using normalized position
+        float c00 = mix(c000, c100, normalizedPos.x);
+        float c01 = mix(c001, c101, normalizedPos.x);
+        float c10 = mix(c010, c110, normalizedPos.x);
+        float c11 = mix(c011, c111, normalizedPos.x);
+        
+        float c0 = mix(c00, c10, normalizedPos.y);
+        float c1 = mix(c01, c11, normalizedPos.y);
+        
+        return mix(c0, c1, normalizedPos.z);
+      }
+      
+      // Ray-box intersection function in world space
+      // Returns entry and exit t values
+      vec2 rayBoxIntersection(vec3 rayOrigin, vec3 rayDir, vec3 boxCenter, float boxScale) {
+        // Calculate box min and max in world space
+        vec3 boxMin = boxCenter - vec3(boxScale * 0.5);
+        vec3 boxMax = boxCenter + vec3(boxScale * 0.5);
+        
+        // Standard ray-box intersection algorithm
+        vec3 invDir = 1.0 / rayDir;
+        vec3 tMin = (boxMin - rayOrigin) * invDir;
+        vec3 tMax = (boxMax - rayOrigin) * invDir;
+        vec3 t1 = min(tMin, tMax);
+        vec3 t2 = max(tMin, tMax);
+        float tNear = max(max(t1.x, t1.y), t1.z);
+        float tFar = min(min(t2.x, t2.y), t2.z);
+        return vec2(tNear, tFar);
+      }
+      
       void main() {
-        fragColor = vColor;
+        // Calculate ray from camera to this fragment in world space
+        vec3 rayOrigin = uCameraPosition;
+        vec3 rayDir = normalize(vWorldPos - uCameraPosition);
+        
+        // Get ray-box intersection with the voxel in world space
+        vec2 tIntersect = rayBoxIntersection(rayOrigin, rayDir, vVoxelCenter, vScale);
+        float tNear = max(0.0, tIntersect.x);
+        float tFar = min(tIntersect.y, 1000.0);  // Limit far intersection for safety
+        
+        // If ray intersects the box
+        if (tNear < tFar) {
+          // Sample multiple points along the ray within the voxel
+          const int numSamples = 3;
+          float stepSize = (tFar - tNear) / float(numSamples + 1);
+          
+          // Average density across all samples
+          float totalDensity = 0.0;
+          
+          for (int i = 0; i < numSamples; i++) {
+            // Calculate sample position in world space
+            float t = tNear + (float(i) + 1.0) * stepSize;
+            vec3 samplePos = rayOrigin + rayDir * t;
+            
+            // Calculate voxel bounds in world space
+            vec3 boxMin = vVoxelCenter - vec3(vScale * 0.5);
+            vec3 boxMax = vVoxelCenter + vec3(vScale * 0.5);
+            
+            // Clamp sample position to voxel bounds
+            samplePos = clamp(samplePos, boxMin, boxMax);
+            
+            // Perform trilinear interpolation at each sample point (in world space)
+            float density = trilinearInterpolation(samplePos, vVoxelCenter, vScale, vGridValues1, vGridValues2);
+            totalDensity += density;
+          }
+          
+          // Average the samples for final density/opacity
+          float density = totalDensity / float(numSamples);
+          
+          // Use density as alpha after applying some scaling/adjustment
+          // This may need tuning based on your data
+          float alpha = clamp(density, 0.0, 1.0);
+          
+          // Output color with calculated alpha
+          fragColor = vec4(vColor.rgb, alpha);
+        } else {
+          // No intersection, discard the fragment
+          // fragColor = vec4(1.0, 0.0, 0.0, 0.0);
+          discard;
+        }
       }
     `;
     
@@ -373,10 +513,15 @@ export class Viewer {
     const projectionMatrixLocation = gl.getUniformLocation(this.program!, 'uProjectionMatrix');
     const viewMatrixLocation = gl.getUniformLocation(this.program!, 'uViewMatrix');
     const useInstanceColorsLocation = gl.getUniformLocation(this.program!, 'uUseInstanceColors');
+    const cameraPositionLocation = gl.getUniformLocation(this.program!, 'uCameraPosition');
     
     gl.uniformMatrix4fv(projectionMatrixLocation, false, this.camera.getProjectionMatrix());
     gl.uniformMatrix4fv(viewMatrixLocation, false, this.camera.getViewMatrix());
     gl.uniform1i(useInstanceColorsLocation, this.useInstanceColors ? 1 : 0);
+    
+    // Pass camera position to the shader
+    const cameraPos = this.camera.getPosition();
+    gl.uniform3f(cameraPositionLocation, cameraPos[0], cameraPos[1], cameraPos[2]);
     
     // Draw instanced geometry
     gl.drawElementsInstanced(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_SHORT, 0, this.instanceCount);
@@ -394,7 +539,9 @@ export class Viewer {
   public loadPointCloud(
     positions: Float32Array, 
     colors?: Float32Array,
-    octlevels?: Uint8Array  // Add optional octlevel parameter
+    octlevels?: Uint8Array,  // Optional octlevel parameter
+    octpaths?: Uint32Array,  // Optional octpath parameter
+    gridValues?: Float32Array // Optional grid values for density field
   ): void {
     const gl = this.gl!;
     
@@ -409,6 +556,9 @@ export class Viewer {
     // For very large point clouds, limit the number of instances
     const maxInstances = 2000000; // Limit for better performance
     
+    // Store sampledGridValues separately as we need to process it differently
+    let sampledGridValues: Float32Array | undefined;
+    
     if (positions.length / 3 > maxInstances) {
       console.warn(`Point cloud has ${positions.length / 3} points, limiting to ${maxInstances} for performance`);
       
@@ -416,6 +566,13 @@ export class Viewer {
       const stride = Math.ceil(positions.length / 3 / maxInstances);
       const sampledPositions = new Float32Array(maxInstances * 3);
       const sampledColors = colors ? new Float32Array(maxInstances * 4) : undefined;
+      const sampledOctlevels = octlevels ? new Uint8Array(maxInstances) : undefined;
+      const sampledOctpaths = octpaths ? new Uint32Array(maxInstances) : undefined;
+      
+      if (gridValues) {
+        // Assuming 8 grid values per vertex
+        sampledGridValues = new Float32Array(maxInstances * 8);
+      }
       
       let j = 0;
       for (let i = 0; i < positions.length; i += 3 * stride) {
@@ -432,12 +589,30 @@ export class Viewer {
           sampledColors[j * 4 + 3] = colors[Math.floor(i / 3) * 4 + 3];
         }
         
+        if (sampledOctlevels && octlevels) {
+          sampledOctlevels[j] = octlevels[Math.floor(i / 3)];
+        }
+        
+        if (sampledOctpaths && octpaths) {
+          sampledOctpaths[j] = octpaths[Math.floor(i / 3)];
+        }
+        
+        if (sampledGridValues && gridValues) {
+          // Copy all 8 grid values for this vertex
+          for (let g = 0; g < 8; g++) {
+            sampledGridValues[j * 8 + g] = gridValues[Math.floor(i / 3) * 8 + g];
+          }
+        }
+        
         j++;
       }
       
       // Use the downsampled data
       positions = sampledPositions;
       colors = sampledColors || colors;
+      octlevels = sampledOctlevels || octlevels;
+      octpaths = sampledOctpaths || octpaths;
+      gridValues = sampledGridValues || gridValues;
     }
     
     // Store the instance positions
@@ -500,6 +675,81 @@ export class Viewer {
       } else {
         console.warn('Shader does not have aInstanceScale attribute. Make sure shader is updated.');
       }
+    }
+    
+    // Store and set up grid values for density field if provided
+    if (gridValues && gridValues.length > 0) {
+      // Set up first set of grid values (0-3)
+      const gridValues1 = new Float32Array(positions.length / 3 * 4);
+      // Set up second set of grid values (4-7)
+      const gridValues2 = new Float32Array(positions.length / 3 * 4);
+      
+      for (let i = 0; i < positions.length / 3; i++) {
+        // Copy grid values 0-3 to first buffer
+        gridValues1[i * 4 + 0] = gridValues[i * 8 + 0]; // grid0_value
+        gridValues1[i * 4 + 1] = gridValues[i * 8 + 1]; // grid1_value
+        gridValues1[i * 4 + 2] = gridValues[i * 8 + 2]; // grid2_value
+        gridValues1[i * 4 + 3] = gridValues[i * 8 + 3]; // grid3_value
+        
+        // Copy grid values 4-7 to second buffer
+        gridValues2[i * 4 + 0] = gridValues[i * 8 + 4]; // grid4_value
+        gridValues2[i * 4 + 1] = gridValues[i * 8 + 5]; // grid5_value
+        gridValues2[i * 4 + 2] = gridValues[i * 8 + 6]; // grid6_value
+        gridValues2[i * 4 + 3] = gridValues[i * 8 + 7]; // grid7_value
+      }
+      
+      // Buffer for grid values 0-3
+      const gridValuesBuffer1 = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, gridValuesBuffer1);
+      gl.bufferData(gl.ARRAY_BUFFER, gridValues1, gl.STATIC_DRAW);
+      
+      // Set up grid values 0-3 attribute
+      const gridValuesLocation1 = gl.getAttribLocation(this.program!, 'aGridValues1');
+      if (gridValuesLocation1 !== -1) {
+        gl.enableVertexAttribArray(gridValuesLocation1);
+        gl.vertexAttribPointer(
+          gridValuesLocation1,
+          4,        // 4 components per attribute (grid values 0-3)
+          gl.FLOAT, // data type
+          false,    // no normalization
+          0,        // stride
+          0         // offset
+        );
+        
+        // Enable instancing for grid values
+        gl.vertexAttribDivisor(gridValuesLocation1, 1);
+      } else {
+        console.warn('Shader does not have aGridValues1 attribute. Make sure shader is updated.');
+      }
+      
+      // Buffer for grid values 4-7
+      const gridValuesBuffer2 = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, gridValuesBuffer2);
+      gl.bufferData(gl.ARRAY_BUFFER, gridValues2, gl.STATIC_DRAW);
+      
+      // Set up grid values 4-7 attribute
+      const gridValuesLocation2 = gl.getAttribLocation(this.program!, 'aGridValues2');
+      if (gridValuesLocation2 !== -1) {
+        gl.enableVertexAttribArray(gridValuesLocation2);
+        gl.vertexAttribPointer(
+          gridValuesLocation2,
+          4,        // 4 components per attribute (grid values 4-7)
+          gl.FLOAT, // data type
+          false,    // no normalization
+          0,        // stride
+          0         // offset
+        );
+        
+        // Enable instancing for grid values
+        gl.vertexAttribDivisor(gridValuesLocation2, 1);
+      } else {
+        console.warn('Shader does not have aGridValues2 attribute. Make sure shader is updated.');
+      }
+      
+      // Store references to buffers for cleanup
+      this.instanceGridValuesBuffer = gridValuesBuffer1;
+      
+      console.log(`Loaded ${positions.length / 3} grid value sets for density field interpolation`);
     }
     
     // Store instance colors if provided
@@ -599,6 +849,7 @@ export class Viewer {
       if (this.instanceBuffer) gl.deleteBuffer(this.instanceBuffer);
       if (this.instanceColorBuffer) gl.deleteBuffer(this.instanceColorBuffer);
       if (this.instanceScaleBuffer) gl.deleteBuffer(this.instanceScaleBuffer);
+      if (this.instanceGridValuesBuffer) gl.deleteBuffer(this.instanceGridValuesBuffer);
       
       // Delete VAO
       if (this.vao) gl.deleteVertexArray(this.vao);

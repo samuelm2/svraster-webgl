@@ -108,6 +108,10 @@ export class Camera {
   public getProjectionMatrix(): mat4 {
     return this.projectionMatrix;
   }
+
+  public getPosition(): vec3 {
+    return this.position;
+  }
   
   /**
    * Orbit the camera around the target

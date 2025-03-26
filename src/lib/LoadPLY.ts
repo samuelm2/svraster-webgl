@@ -5,6 +5,9 @@ export interface PLYData {
   vertices: Float32Array;    // Position data (x, y, z)
   colors: Float32Array;      // Color data from f_dc fields
   octlevels?: Uint8Array;    // Optional octlevel data for scaling
+  octpaths?: Uint32Array;    // Optional octpath data
+  restValues?: Float32Array; // Optional f_rest values (0-23)
+  gridValues?: Float32Array; // Optional grid point density values (0-7)
   vertexCount: number;
   sceneCenter?: [number, number, number]; // Optional scene center
   sceneExtent?: number;      // Optional scene extent as a single value
@@ -156,6 +159,37 @@ export class LoadPLY {
       console.log('File has octlevel property');
     }
     
+    // Check if the file has octpath property
+    const hasOctpath = properties.some(p => p.name === 'octpath');
+    let octpaths: Uint32Array | undefined;
+    
+    if (hasOctpath) {
+      octpaths = new Uint32Array(vertexCount);
+      console.log('File has octpath property');
+    }
+    
+    // Check if the file has f_rest properties
+    const hasRestValues = properties.some(p => p.name.startsWith('f_rest_'));
+    let restValues: Float32Array | undefined;
+    
+    if (hasRestValues) {
+      // Count how many f_rest properties are present (should be 24 from f_rest_0 to f_rest_23)
+      const restCount = properties.filter(p => p.name.startsWith('f_rest_')).length;
+      restValues = new Float32Array(vertexCount * restCount);
+      console.log(`File has ${restCount} f_rest properties`);
+    }
+    
+    // Check if the file has grid value properties
+    const hasGridValues = properties.some(p => p.name.includes('grid') && p.name.includes('_value'));
+    let gridValues: Float32Array | undefined;
+    
+    if (hasGridValues) {
+      // Count grid properties (should be 8: grid0_value to grid7_value)
+      const gridCount = properties.filter(p => p.name.includes('grid') && p.name.includes('_value')).length;
+      gridValues = new Float32Array(vertexCount * gridCount);
+      console.log(`File has ${gridCount} grid value properties`);
+    }
+    
     // Calculate data offsets for binary reading
     const propertyOffsets: { [key: string]: number } = {};
     const propertySizes: { [key: string]: number } = {};
@@ -220,8 +254,34 @@ export class LoadPLY {
       
       // Read octlevel if present
       if (hasOctlevel && octlevels && propertyOffsets['octlevel'] !== undefined) {
-        // Octlevel is typically a uchar/char (1 byte)
         octlevels[i] = dataView.getUint8(vertexOffset + propertyOffsets['octlevel']);
+      }
+      
+      // Read octpath if present
+      if (hasOctpath && octpaths && propertyOffsets['octpath'] !== undefined) {
+        octpaths[i] = dataView.getUint32(vertexOffset + propertyOffsets['octpath'], true);
+      }
+      
+      // Read f_rest values if present
+      if (hasRestValues && restValues) {
+        const restCount = properties.filter(p => p.name.startsWith('f_rest_')).length;
+        for (let r = 0; r < restCount; r++) {
+          const propName = `f_rest_${r}`;
+          if (propertyOffsets[propName] !== undefined) {
+            restValues[i * restCount + r] = dataView.getFloat32(vertexOffset + propertyOffsets[propName], true);
+          }
+        }
+      }
+      
+      // Read grid values if present
+      if (hasGridValues && gridValues) {
+        const gridCount = properties.filter(p => p.name.includes('grid') && p.name.includes('_value')).length;
+        for (let g = 0; g < gridCount; g++) {
+          const propName = `grid${g}_value`;
+          if (propertyOffsets[propName] !== undefined) {
+            gridValues[i * gridCount + g] = dataView.getFloat32(vertexOffset + propertyOffsets[propName], true);
+          }
+        }
       }
       
       // For debugging, log a few vertices
@@ -235,6 +295,9 @@ export class LoadPLY {
       vertices,
       colors,
       octlevels,
+      octpaths,
+      restValues,
+      gridValues,
       vertexCount,
       sceneCenter,
       sceneExtent
