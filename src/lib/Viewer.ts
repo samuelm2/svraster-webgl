@@ -104,10 +104,6 @@ export class Viewer {
       throw new Error('WebGL2 not supported in this browser');
     }
     
-    // Disable depth testing and enable alpha blending
-    this.gl.disable(this.gl.DEPTH_TEST);
-    this.gl.enable(this.gl.BLEND);
-    this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
     
     // Initialize camera - revert to original positive Z position
     this.camera = new Camera();
@@ -179,9 +175,9 @@ export class Viewer {
       in vec4 aVertexColor;
       in vec4 aInstanceOffset;
       in vec4 aInstanceColor;    // SH0 - constant term
-      in vec3 aInstanceSH1_0;    // First 3 SH1 coefficients
-      in vec3 aInstanceSH1_1;    // Next 3 SH1 coefficients
-      in vec3 aInstanceSH1_2;    // Last 3 SH1 coefficients
+      in vec3 aInstanceSH1_0;    // SH1 coefficients for Red
+      in vec3 aInstanceSH1_1;    // SH1 coefficients for Green
+      in vec3 aInstanceSH1_2;    // SH1 coefficients for Blue
       in float aInstanceScale;
       in vec4 aInstanceDensity0; // Density values for 4 corners
       in vec4 aInstanceDensity1; // Density values for other 4 corners
@@ -207,41 +203,21 @@ export class Viewer {
         // SH0 is constant term (already in RGB)
         vec3 color = sh0.rgb;
         
-        // Calculate basis functions for SH (using standard SH basis functions)
-        // Y_0,0 = 0.282095 (constant, already handled with sh0)
-        
-        // Order 1 (linear terms)
+        // Calculate basis functions for SH1 (first order terms only)
         // Y_1,-1 = 0.488603 * y
-        float basis1 = 0.488603 * dir.y;
-        // Y_1,0 = 0.488603 * z
-        float basis2 = 0.488603 * dir.z;
-        // Y_1,1 = 0.488603 * x
-        float basis3 = 0.488603 * dir.x;
+        // Y_1,0  = 0.488603 * z
+        // Y_1,1  = 0.488603 * x
+        float basis_y = 0.488603 * dir.y;
+        float basis_z = 0.488603 * dir.z;
+        float basis_x = 0.488603 * dir.x;
         
-        // Order 2 (quadratic terms)
-        // Y_2,-2 = 1.092548 * x * y
-        float basis4 = 1.092548 * dir.x * dir.y;
-        // Y_2,-1 = 1.092548 * y * z
-        float basis5 = 1.092548 * dir.y * dir.z;
-        // Y_2,0 = 0.315392 * (3 * z * z - 1)
-        float basis6 = 0.315392 * (3.0 * dir.z * dir.z - 1.0);
-        // Y_2,1 = 1.092548 * x * z
-        float basis7 = 1.092548 * dir.x * dir.z;
-        // Y_2,2 = 0.546274 * (x * x - y * y)
-        float basis8 = 0.546274 * (dir.x * dir.x - dir.y * dir.y);
+        vec3 sh1_contrib = vec3(0);
+        // Apply SH1 coefficients per color channel
+        sh1_contrib += sh1_0 * basis_x;
+        sh1_contrib += sh1_1 * basis_y;
+        sh1_contrib += sh1_2 * basis_z;
         
-        // Apply spherical harmonic coefficients
-        color += vec3(sh1_0.x * basis1); // Y_1,-1
-        color += vec3(sh1_0.y * basis2); // Y_1,0
-        color += vec3(sh1_0.z * basis3); // Y_1,1
-        
-        color += vec3(sh1_1.x * basis4); // Y_2,-2
-        color += vec3(sh1_1.y * basis5); // Y_2,-1
-        color += vec3(sh1_1.z * basis6); // Y_2,0
-        
-        color += vec3(sh1_2.x * basis7); // Y_2,1
-        color += vec3(sh1_2.y * basis8); // Y_2,2
-        // The 9th coefficient (sh1_2.z) is unused or could be used for a custom term
+        color += sh1_contrib;
         
         // Clamp to valid RGB range
         return clamp(color, 0.0, 1.0);
@@ -309,6 +285,11 @@ export class Viewer {
         vec3 t2 = max(tMin, tMax);
         float tNear = max(max(t1.x, t1.y), t1.z);
         float tFar = min(min(t2.x, t2.y), t2.z);
+        
+        // If camera is inside the box, tNear will be negative
+        // In this case, we should start sampling from the camera position
+        tNear = max(0.0, tNear);
+        
         return vec2(tNear, tFar);
       }
       
@@ -333,7 +314,7 @@ export class Viewer {
         
         // Linear interpolation factors
         float fx = normPos.x;
-        float fy = normPos.y;  // This is now inverted
+        float fy = normPos.y;
         float fz = normPos.z;
         float fx1 = 1.0 - fx;
         float fy1 = 1.0 - fy;
@@ -351,6 +332,16 @@ export class Viewer {
         
         // Finally interpolate along z axis
         return fz1 * c0 + fz * c1; // Edge [x,y,0] to [x,y,1]
+      }
+      
+      float explin(float x) {
+        float threshold = 1.1;
+        if (x > threshold) {
+          return x;
+        } else {
+          float ln1_1 = 0.0953101798043; // pre-computed ln(1.1)
+          return exp((x / threshold) - 1.0 + ln1_1);
+        }
       }
       
       void main() {
@@ -371,26 +362,24 @@ export class Viewer {
           // Get intersection length
           float rayLength = tFar - tNear;
           
-          // Sample at three points within the cube
-          // First sample at 1/4 along the ray path
+          // Get raw interpolated densities
           vec3 samplePoint1 = rayOrigin + rayDir * (tNear + rayLength * 0.25);
-          float density1 = trilinearInterpolation(samplePoint1, boxMin, boxMax, vDensity0, vDensity1);
+          float rawDensity1 = trilinearInterpolation(samplePoint1, boxMin, boxMax, vDensity0, vDensity1);
           
-          // Second sample at 2/4 (halfway) along the ray path
           vec3 samplePoint2 = rayOrigin + rayDir * (tNear + rayLength * 0.5);
-          float density2 = trilinearInterpolation(samplePoint2, boxMin, boxMax, vDensity0, vDensity1);
+          float rawDensity2 = trilinearInterpolation(samplePoint2, boxMin, boxMax, vDensity0, vDensity1);
           
-          // Third sample at 3/4 along the ray path
           vec3 samplePoint3 = rayOrigin + rayDir * (tNear + rayLength * 0.75);
-          float density3 = trilinearInterpolation(samplePoint3, boxMin, boxMax, vDensity0, vDensity1);
+          float rawDensity3 = trilinearInterpolation(samplePoint3, boxMin, boxMax, vDensity0, vDensity1);
           
-          // Average the densities from all three samples
+          // Apply explin after interpolation
+          float density1 = explin(rawDensity1);
+          float density2 = explin(rawDensity2);
+          float density3 = explin(rawDensity3);
+          
           float avgDensity = (density1 + density2 + density3) / 3.0;
+          float alpha = 1.0 - exp(-avgDensity * rayLength);  // Beer-Lambert law
           
-          // Calculate opacity based on average density
-          float alpha = avgDensity;
-          
-          // Use the pre-calculated color with calculated alpha
           fragColor = vec4(vColor, alpha);
         } else {
           discard;
@@ -454,26 +443,7 @@ export class Viewer {
       console.log('Shader program linked successfully');
     }
   }
-  
-  private createShader(type: number, source: string): WebGLShader {
-    const gl = this.gl!;
-    const shader = gl.createShader(type);
-    
-    if (!shader) {
-      throw new Error('Failed to create shader');
-    }
-    
-    gl.shaderSource(shader, source);
-    gl.compileShader(shader);
-    
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-      const info = gl.getShaderInfoLog(shader);
-      gl.deleteShader(shader);
-      throw new Error(`Could not compile shader: ${info}`);
-    }
-    
-    return shader;
-  }
+
   
   private initBuffers(): void {
     const gl = this.gl!;
@@ -635,14 +605,15 @@ export class Viewer {
     }
     
     // Clear the canvas with a slightly visible color to see if rendering is happening
-    gl.clearColor(0.1, 0.1, 0.1, 1.0); // Dark gray instead of black
+    gl.clearColor(0.0, 0.0, 0.0, 1.0); 
     gl.clear(gl.COLOR_BUFFER_BIT);
     
     // Ensure blending is properly set up
     gl.disable(gl.DEPTH_TEST);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    
+
+
     // Use our shader program
     gl.useProgram(this.program);
     
