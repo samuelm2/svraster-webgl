@@ -130,7 +130,7 @@ function addControls(viewer: Viewer, camera: Camera) {
   const heightControl = document.createElement('div');
   heightControl.innerHTML = `
     <label for="height">Camera Height: </label>
-    <input type="range" id="height" min="0" max="15" step="0.5" value="5">
+    <input type="range" id="height" min="-10" max="15" step="0.5" value="-5">
   `;
   controls.appendChild(heightControl);
   

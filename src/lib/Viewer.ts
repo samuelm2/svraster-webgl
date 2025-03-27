@@ -27,7 +27,6 @@ export class Viewer {
   private lastFrameTime: number = 0;
   
   // Rendering flags
-  private useInstanceColors: boolean = false;
 
   // Scene properties for scaling calculation
   private sceneCenter: [number, number, number] = [0, 0, 0];
@@ -35,6 +34,25 @@ export class Viewer {
   private instanceScaleBuffer: WebGLBuffer | null = null;
   private baseVoxelSize: number = 0.01;
   private instanceGridValuesBuffer: WebGLBuffer | null = null; // New buffer for grid density values
+
+  private lastCameraPosition: [number, number, number] = [0, 0, 0];
+  private resortThreshold: number = 0.1; // Threshold for camera movement to trigger resort
+
+  // Add these properties to the Viewer class definition at the top
+  private sortWorker: Worker | null = null;
+  private pendingSortRequest: boolean = false;
+  private originalPositions: Float32Array | null = null;
+  private originalColors: Float32Array | null = null;
+  private originalScales: Float32Array | null = null;
+  private originalGridValues1: Float32Array | null = null;
+  private originalGridValues2: Float32Array | null = null;
+  private sortedIndices: Uint32Array | null = null;
+
+  // Add these properties to store the original octree data
+  private originalOctlevels: Uint8Array | null = null;
+  private originalOctpaths: Uint32Array | null = null;
+
+  // Add a flag for this debug feature
 
   constructor(containerId: string) {
     // Create canvas element
@@ -60,13 +78,19 @@ export class Viewer {
       throw new Error('WebGL2 not supported in this browser');
     }
     
-    // Enable depth testing
-    this.gl.enable(this.gl.DEPTH_TEST);
+    // Disable depth testing and enable alpha blending
+    this.gl.disable(this.gl.DEPTH_TEST);
+    this.gl.enable(this.gl.BLEND);
+    this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
     
     // Initialize camera
     this.camera = new Camera();
     this.camera.setPosition(0, 0, 15); // Set initial camera position
     this.camera.setTarget(0, 0, 0);    // Look at origin
+    
+    // Fix: Initialize last camera position using explicit array
+    const pos = this.camera.getPosition();
+    this.lastCameraPosition = [pos[0], pos[1], pos[2]]; 
     
     // Set initial size
     this.updateCanvasSize();
@@ -86,6 +110,10 @@ export class Viewer {
     this.program = null;
     this.initShaders();
     this.initBuffers();
+    
+    // Initialize the sort worker
+    this.initSortWorker();
+    
     this.render(0);
   }
   
@@ -114,15 +142,13 @@ export class Viewer {
   private initShaders(): void {
     const gl = this.gl!;
     
-    // Updated vertex shader to pass grid values to fragment shader
+    // Updated vertex shader to pass more data to fragment shader
     const vsSource = `#version 300 es
       in vec4 aVertexPosition;
       in vec4 aVertexColor;
       in vec4 aInstanceOffset;
       in vec4 aInstanceColor;
-      in float aInstanceScale;
-      in vec4 aGridValues1;   // First 4 grid values (0-3)
-      in vec4 aGridValues2;   // Second 4 grid values (4-7)
+      in float aInstanceScale;   // Scale for the voxel
       
       uniform mat4 uProjectionMatrix;
       uniform mat4 uViewMatrix;
@@ -130,8 +156,6 @@ export class Viewer {
       
       out vec4 vColor;
       out vec3 vWorldPos;     // World position of the vertex
-      out vec4 vGridValues1;  // Passing grid values to fragment shader
-      out vec4 vGridValues2;
       out float vScale;       // Pass scale to fragment shader
       out vec3 vVoxelCenter;  // Center of the voxel in world space
       
@@ -151,10 +175,6 @@ export class Viewer {
         // Calculate and pass voxel center (instance position = center of voxel)
         vVoxelCenter = aInstanceOffset.xyz;
         
-        // Pass grid values to fragment shader
-        vGridValues1 = aGridValues1;
-        vGridValues2 = aGridValues2;
-        
         // Pass scale to fragment shader
         vScale = aInstanceScale;
         
@@ -163,62 +183,18 @@ export class Viewer {
       }
     `;
     
-    // Fragment shader with trilinear interpolation for density field values
-    // Now working entirely in world space
+    // Fragment shader with proper ray-box intersection
     const fsSource = `#version 300 es
       precision mediump float;
       
       in vec4 vColor;
       in vec3 vWorldPos;      // World position of the vertex
-      in vec4 vGridValues1;   // First 4 grid values (corners 0-3)
-      in vec4 vGridValues2;   // Second 4 grid values (corners 4-7)
       in float vScale;        // Scale of the voxel
       in vec3 vVoxelCenter;   // Center of the voxel in world space
       
       uniform vec3 uCameraPosition; // Camera position in world space
       
       out vec4 fragColor;
-      
-      // Calculate world space position of a voxel corner
-      vec3 getCornerWorldPos(vec3 center, float scale, vec3 cornerOffset) {
-        // Convert from [-0.5, 0.5] local space to world space
-        return center + (cornerOffset * scale);
-      }
-      
-      // Trilinear interpolation in world space
-      float trilinearInterpolation(vec3 samplePos, vec3 voxelCenter, float voxelScale, vec4 values1, vec4 values2) {
-        // Calculate the normalized position within the voxel (0-1 range)
-        // First get min/max corners in world space
-        vec3 boxMin = voxelCenter - vec3(voxelScale * 0.5);
-        vec3 boxMax = voxelCenter + vec3(voxelScale * 0.5);
-        
-        // Normalize the sample position to 0-1 within the box bounds
-        vec3 normalizedPos = (samplePos - boxMin) / (boxMax - boxMin);
-        
-        // Clamp to ensure we're in the 0-1 range
-        normalizedPos = clamp(normalizedPos, 0.0, 1.0);
-        
-        // Get the corner values
-        float c000 = values1.x;  // Corner [0,0,0] - grid0_value
-        float c001 = values1.y;  // Corner [0,0,1] - grid1_value
-        float c010 = values1.z;  // Corner [0,1,0] - grid2_value
-        float c011 = values1.w;  // Corner [0,1,1] - grid3_value
-        float c100 = values2.x;  // Corner [1,0,0] - grid4_value
-        float c101 = values2.y;  // Corner [1,0,1] - grid5_value
-        float c110 = values2.z;  // Corner [1,1,0] - grid6_value
-        float c111 = values2.w;  // Corner [1,1,1] - grid7_value
-        
-        // Trilinear interpolation using normalized position
-        float c00 = mix(c000, c100, normalizedPos.x);
-        float c01 = mix(c001, c101, normalizedPos.x);
-        float c10 = mix(c010, c110, normalizedPos.x);
-        float c11 = mix(c011, c111, normalizedPos.x);
-        
-        float c0 = mix(c00, c10, normalizedPos.y);
-        float c1 = mix(c01, c11, normalizedPos.y);
-        
-        return mix(c0, c1, normalizedPos.z);
-      }
       
       // Ray-box intersection function in world space
       // Returns entry and exit t values
@@ -250,65 +226,81 @@ export class Viewer {
         
         // If ray intersects the box
         if (tNear < tFar) {
-          // Sample multiple points along the ray within the voxel
-          const int numSamples = 3;
-          float stepSize = (tFar - tNear) / float(numSamples + 1);
+          // Calculate intersection length (affects opacity)
+          float intersectionLength = tFar - tNear;
           
-          // Average density across all samples
-          float totalDensity = 0.0;
+          // Scale opacity based on intersection length and voxel scale
+          // Smaller voxels need higher opacity to be visible
+          float baseOpacity = 0.8;
+          float relativeSize = vScale / 0.1; // Compare to a reference size
+          float sizeScale = clamp(1.0 / relativeSize, 0.2, 5.0);
           
-          for (int i = 0; i < numSamples; i++) {
-            // Calculate sample position in world space
-            float t = tNear + (float(i) + 1.0) * stepSize;
-            vec3 samplePos = rayOrigin + rayDir * t;
-            
-            // Calculate voxel bounds in world space
-            vec3 boxMin = vVoxelCenter - vec3(vScale * 0.5);
-            vec3 boxMax = vVoxelCenter + vec3(vScale * 0.5);
-            
-            // Clamp sample position to voxel bounds
-            samplePos = clamp(samplePos, boxMin, boxMax);
-            
-            // Perform trilinear interpolation at each sample point (in world space)
-            float density = trilinearInterpolation(samplePos, vVoxelCenter, vScale, vGridValues1, vGridValues2);
-            totalDensity += density;
-          }
-          
-          // Average the samples for final density/opacity
-          float density = totalDensity / float(numSamples);
-          
-          // Use density as alpha after applying some scaling/adjustment
-          // This may need tuning based on your data
-          float alpha = clamp(density, 0.0, 1.0);
+          // Calculate alpha based on both intersection length and voxel size
+          float alpha = baseOpacity * min(intersectionLength * sizeScale, 1.0);
           
           // Output color with calculated alpha
           fragColor = vec4(vColor.rgb, alpha);
         } else {
           // No intersection, discard the fragment
-          // fragColor = vec4(1.0, 0.0, 0.0, 0.0);
           discard;
         }
       }
     `;
     
-    // Create shaders
-    const vertexShader = this.createShader(gl.VERTEX_SHADER, vsSource);
-    const fragmentShader = this.createShader(gl.FRAGMENT_SHADER, fsSource);
+    // Create shaders with better error handling
+    const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+    if (!vertexShader) {
+      console.error('Failed to create vertex shader');
+      return;
+    }
+    
+    gl.shaderSource(vertexShader, vsSource);
+    gl.compileShader(vertexShader);
+    
+    if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
+      const info = gl.getShaderInfoLog(vertexShader);
+      console.error('Vertex shader compilation failed:', info);
+      gl.deleteShader(vertexShader);
+      return;
+    } else {
+      console.log('Vertex shader compiled successfully');
+    }
+    
+    const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+    if (!fragmentShader) {
+      console.error('Failed to create fragment shader');
+      return;
+    }
+    
+    gl.shaderSource(fragmentShader, fsSource);
+    gl.compileShader(fragmentShader);
+    
+    if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
+      const info = gl.getShaderInfoLog(fragmentShader);
+      console.error('Fragment shader compilation failed:', info);
+      gl.deleteShader(fragmentShader);
+      return;
+    } else {
+      console.log('Fragment shader compiled successfully');
+    }
     
     // Create and link program
     this.program = gl.createProgram();
     if (!this.program) {
-      throw new Error('Failed to create shader program');
+      console.error('Failed to create shader program');
+      return;
     }
     
     gl.attachShader(this.program, vertexShader);
     gl.attachShader(this.program, fragmentShader);
     gl.linkProgram(this.program);
     
-    // Check if program linked successfully
     if (!gl.getProgramParameter(this.program, gl.LINK_STATUS)) {
       const info = gl.getProgramInfoLog(this.program);
-      throw new Error(`Could not compile WebGL program: ${info}`);
+      console.error('Shader program linking failed:', info);
+      return;
+    } else {
+      console.log('Shader program linked successfully');
     }
   }
   
@@ -385,9 +377,10 @@ export class Viewer {
   private initCubeGeometry(size: number): void {
     const gl = this.gl!;
     
-    // Create a cube with the specified size
+    // Create a simplified cube with the specified size
     const halfSize = size / 2;
     
+    // Simplify: Just use a cube with 8 vertices and 12 triangles
     const positions = [
       // Front face
       -halfSize, -halfSize,  halfSize,
@@ -400,30 +393,6 @@ export class Viewer {
       -halfSize,  halfSize, -halfSize,
        halfSize,  halfSize, -halfSize,
        halfSize, -halfSize, -halfSize,
-      
-      // Top face
-      -halfSize,  halfSize, -halfSize,
-      -halfSize,  halfSize,  halfSize,
-       halfSize,  halfSize,  halfSize,
-       halfSize,  halfSize, -halfSize,
-      
-      // Bottom face
-      -halfSize, -halfSize, -halfSize,
-       halfSize, -halfSize, -halfSize,
-       halfSize, -halfSize,  halfSize,
-      -halfSize, -halfSize,  halfSize,
-      
-      // Right face
-       halfSize, -halfSize, -halfSize,
-       halfSize,  halfSize, -halfSize,
-       halfSize,  halfSize,  halfSize,
-       halfSize, -halfSize,  halfSize,
-      
-      // Left face
-      -halfSize, -halfSize, -halfSize,
-      -halfSize, -halfSize,  halfSize,
-      -halfSize,  halfSize,  halfSize,
-      -halfSize,  halfSize, -halfSize,
     ];
     
     // Create position buffer
@@ -443,9 +412,9 @@ export class Viewer {
       0         // offset
     );
     
-    // Default cube vertex colors (white)
+    // Simplify: Solid white colors for all vertices
     const colors = [];
-    for (let i = 0; i < 24; i++) {
+    for (let i = 0; i < 8; i++) {
       colors.push(1.0, 1.0, 1.0, 1.0);
     }
     
@@ -466,14 +435,14 @@ export class Viewer {
       0         // offset
     );
     
-    // Create indices for the cube
+    // Simplify: Use just front and back faces for a total of 12 triangles
     const indices = [
-      0,  1,  2,    0,  2,  3,    // Front face
-      4,  5,  6,    4,  6,  7,    // Back face
-      8,  9,  10,   8,  10, 11,   // Top face
-      12, 13, 14,   12, 14, 15,   // Bottom face
-      16, 17, 18,   16, 18, 19,   // Right face
-      20, 21, 22,   20, 22, 23,   // Left face
+      0, 1, 2,    0, 2, 3,    // Front face
+      4, 5, 6,    4, 6, 7,    // Back face
+      0, 3, 5,    0, 5, 4,    // Left face
+      1, 7, 6,    1, 6, 2,    // Right face
+      3, 2, 6,    3, 6, 5,    // Top face
+      0, 4, 7,    0, 7, 1     // Bottom face
     ];
     
     // Create index buffer
@@ -483,6 +452,8 @@ export class Viewer {
     
     // Store the number of indices
     this.indexCount = indices.length;
+    
+    console.log(`Initialized cube geometry with ${this.indexCount} indices`);
   }
   
   /**
@@ -495,36 +466,87 @@ export class Viewer {
     const deltaTime = (timestamp - this.lastFrameTime) / 1000;
     this.lastFrameTime = timestamp;
     
-    // Clear the canvas
-    gl.clearColor(0.0, 0.0, 0.0, 1.0);
-    gl.clearDepth(1.0);
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    // Check if camera has moved enough to trigger a resort
+    const cameraPos = this.camera.getPosition();
+    const dx = cameraPos[0] - this.lastCameraPosition[0];
+    const dy = cameraPos[1] - this.lastCameraPosition[1];
+    const dz = cameraPos[2] - this.lastCameraPosition[2];
+    const cameraMoveDistance = Math.sqrt(dx*dx + dy*dy + dz*dz);
     
-    // Orbit the camera (this is now handled by the external controls)
-    // this.camera.orbit(deltaTime * this.rotationSpeed * 10);
+    if (cameraMoveDistance > this.resortThreshold && !this.pendingSortRequest) {
+      this.lastCameraPosition = [cameraPos[0], cameraPos[1], cameraPos[2]];
+      this.requestSort();
+    }
+    
+    // Debug: Ensure we have valid data to render
+    if (this.instanceCount === 0) {
+      console.warn('No instances to render');
+    }
+    
+    // Clear the canvas with a slightly visible color to see if rendering is happening
+    gl.clearColor(0.1, 0.1, 0.1, 1.0); // Dark gray instead of black
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    
+    // Ensure blending is properly set up
+    gl.disable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     
     // Use our shader program
     gl.useProgram(this.program);
     
+    // Debug: Check if program is valid
+    if (!this.program) {
+      console.error('Shader program is null');
+      requestAnimationFrame((time) => this.render(time));
+      return;
+    }
+    
     // Bind the VAO
     gl.bindVertexArray(this.vao);
     
+    // Debug: Check if VAO is valid
+    if (!this.vao) {
+      console.error('VAO is null');
+      requestAnimationFrame((time) => this.render(time));
+      return;
+    }
+    
     // Set uniforms with camera matrices
-    const projectionMatrixLocation = gl.getUniformLocation(this.program!, 'uProjectionMatrix');
-    const viewMatrixLocation = gl.getUniformLocation(this.program!, 'uViewMatrix');
-    const useInstanceColorsLocation = gl.getUniformLocation(this.program!, 'uUseInstanceColors');
-    const cameraPositionLocation = gl.getUniformLocation(this.program!, 'uCameraPosition');
+    const projectionMatrixLocation = gl.getUniformLocation(this.program, 'uProjectionMatrix');
+    const viewMatrixLocation = gl.getUniformLocation(this.program, 'uViewMatrix');
+    const useInstanceColorsLocation = gl.getUniformLocation(this.program, 'uUseInstanceColors');
+    const cameraPositionLocation = gl.getUniformLocation(this.program, 'uCameraPosition');
+    
+    // Debug: Check if uniform locations are valid
+    if (!projectionMatrixLocation || !viewMatrixLocation || !cameraPositionLocation) {
+      console.error('Failed to get uniform locations');
+      console.log({
+        projectionMatrixLocation,
+        viewMatrixLocation,
+        useInstanceColorsLocation,
+        cameraPositionLocation
+      });
+    }
     
     gl.uniformMatrix4fv(projectionMatrixLocation, false, this.camera.getProjectionMatrix());
     gl.uniformMatrix4fv(viewMatrixLocation, false, this.camera.getViewMatrix());
-    gl.uniform1i(useInstanceColorsLocation, this.useInstanceColors ? 1 : 0);
+    gl.uniform1i(useInstanceColorsLocation, 1);
     
     // Pass camera position to the shader
-    const cameraPos = this.camera.getPosition();
     gl.uniform3f(cameraPositionLocation, cameraPos[0], cameraPos[1], cameraPos[2]);
+    
+    // Debug: Log rendering attempt
+    console.log(`Rendering ${this.instanceCount} instances`);
     
     // Draw instanced geometry
     gl.drawElementsInstanced(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_SHORT, 0, this.instanceCount);
+    
+    // Check for GL errors
+    const error = gl.getError();
+    if (error !== gl.NO_ERROR) {
+      console.error(`WebGL error: ${error}`);
+    }
     
     // Unbind the VAO
     gl.bindVertexArray(null);
@@ -539,81 +561,58 @@ export class Viewer {
   public loadPointCloud(
     positions: Float32Array, 
     colors?: Float32Array,
-    octlevels?: Uint8Array,  // Optional octlevel parameter
-    octpaths?: Uint32Array,  // Optional octpath parameter
-    gridValues?: Float32Array // Optional grid values for density field
+    octlevels?: Uint8Array,
+    octpaths?: Uint32Array,
+    gridValues?: Float32Array
   ): void {
+    console.log(`Loading point cloud with ${positions.length / 3} points`);
+    
+    // Save original data for sorting
+    this.originalPositions = new Float32Array(positions);
+    
+    // Always save colors from PLY
+    if (colors) {
+      console.log("Saving colors from PLY file");
+      this.originalColors = new Float32Array(colors);
+    } else {
+      // If no colors provided, create white voxels
+      console.log("No colors in PLY, using white");
+      this.originalColors = new Float32Array(positions.length / 3 * 4);
+      for (let i = 0; i < positions.length / 3; i++) {
+        this.originalColors[i * 4 + 0] = 1.0; // R
+        this.originalColors[i * 4 + 1] = 1.0; // G
+        this.originalColors[i * 4 + 2] = 1.0; // B
+        this.originalColors[i * 4 + 3] = 1.0; // A
+      }
+    }
+    
+    // IMPORTANT: Save the original octree data
+    if (octlevels) {
+      console.log(`Saving ${octlevels.length} octlevels`);
+      this.originalOctlevels = new Uint8Array(octlevels);
+      
+      // Also derive scales for rendering
+      this.originalScales = new Float32Array(octlevels.length);
+      for (let i = 0; i < octlevels.length; i++) {
+        this.originalScales[i] = this.baseVoxelSize * Math.pow(2, -octlevels[i]);
+      }
+    }
+    
+    if (octpaths) {
+      console.log(`Saving ${octpaths.length} octpaths`);
+      this.originalOctpaths = new Uint32Array(octpaths);
+    }
+    
+    // Call the original implementation
     const gl = this.gl!;
     
     // Create a VAO for the point cloud
     this.vao = gl.createVertexArray();
     gl.bindVertexArray(this.vao);
     
-    // For very large point clouds, use smaller cubes
-    const cubeSize = 1.0; // This is now a base size that will be scaled by octlevel
+    // Initialize cube geometry
+    const cubeSize = 1.0; // Base size that will be scaled
     this.initCubeGeometry(cubeSize);
-    
-    // For very large point clouds, limit the number of instances
-    const maxInstances = 2000000; // Limit for better performance
-    
-    // Store sampledGridValues separately as we need to process it differently
-    let sampledGridValues: Float32Array | undefined;
-    
-    if (positions.length / 3 > maxInstances) {
-      console.warn(`Point cloud has ${positions.length / 3} points, limiting to ${maxInstances} for performance`);
-      
-      // Create a downsampled version
-      const stride = Math.ceil(positions.length / 3 / maxInstances);
-      const sampledPositions = new Float32Array(maxInstances * 3);
-      const sampledColors = colors ? new Float32Array(maxInstances * 4) : undefined;
-      const sampledOctlevels = octlevels ? new Uint8Array(maxInstances) : undefined;
-      const sampledOctpaths = octpaths ? new Uint32Array(maxInstances) : undefined;
-      
-      if (gridValues) {
-        // Assuming 8 grid values per vertex
-        sampledGridValues = new Float32Array(maxInstances * 8);
-      }
-      
-      let j = 0;
-      for (let i = 0; i < positions.length; i += 3 * stride) {
-        if (j >= maxInstances) break;
-        
-        sampledPositions[j * 3] = positions[i];
-        sampledPositions[j * 3 + 1] = positions[i + 1];
-        sampledPositions[j * 3 + 2] = positions[i + 2];
-        
-        if (sampledColors && colors) {
-          sampledColors[j * 4] = colors[Math.floor(i / 3) * 4];
-          sampledColors[j * 4 + 1] = colors[Math.floor(i / 3) * 4 + 1];
-          sampledColors[j * 4 + 2] = colors[Math.floor(i / 3) * 4 + 2];
-          sampledColors[j * 4 + 3] = colors[Math.floor(i / 3) * 4 + 3];
-        }
-        
-        if (sampledOctlevels && octlevels) {
-          sampledOctlevels[j] = octlevels[Math.floor(i / 3)];
-        }
-        
-        if (sampledOctpaths && octpaths) {
-          sampledOctpaths[j] = octpaths[Math.floor(i / 3)];
-        }
-        
-        if (sampledGridValues && gridValues) {
-          // Copy all 8 grid values for this vertex
-          for (let g = 0; g < 8; g++) {
-            sampledGridValues[j * 8 + g] = gridValues[Math.floor(i / 3) * 8 + g];
-          }
-        }
-        
-        j++;
-      }
-      
-      // Use the downsampled data
-      positions = sampledPositions;
-      colors = sampledColors || colors;
-      octlevels = sampledOctlevels || octlevels;
-      octpaths = sampledOctpaths || octpaths;
-      gridValues = sampledGridValues || gridValues;
-    }
     
     // Store the instance positions
     this.instanceBuffer = gl.createBuffer();
@@ -635,17 +634,37 @@ export class Viewer {
     // Enable instancing
     gl.vertexAttribDivisor(instanceAttributeLocation, 1);
     
-    // Create and set up scale buffer if octlevels are provided
-    if (octlevels && octlevels.length > 0) {
-      // Calculate scales based on octlevels
-      const scales = new Float32Array(octlevels.length);
+    // Always setup the instance color buffer
+    this.instanceColorBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceColorBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, this.originalColors, gl.STATIC_DRAW);
+    
+    // Set up instance color attribute
+    const instanceColorLocation = gl.getAttribLocation(this.program!, 'aInstanceColor');
+    gl.enableVertexAttribArray(instanceColorLocation);
+    gl.vertexAttribPointer(
+      instanceColorLocation,
+      4,        // 4 components per color (RGBA)
+      gl.FLOAT, // data type
+      false,    // no normalization
+      0,        // stride
+      0         // offset
+    );
+    
+    // Enable instancing for colors
+    gl.vertexAttribDivisor(instanceColorLocation, 1);
+    
+    // Set the instance count to the number of points
+    this.instanceCount = positions.length / 3;
+    
+    // IMPORTANT: Create and set up scale buffer for varied voxel sizes
+    if (this.originalOctlevels) {
+      console.log("Setting up scale buffer from octlevels");
       
-      for (let i = 0; i < octlevels.length; i++) {
-        // Calculate voxel size based on the formula: voxel_size = world_size * 2^(-octlevel)
-        const octlevel = octlevels[i];
-        // Use the base voxel size and simple scale factor based on octlevel
-        const scale = this.baseVoxelSize * Math.pow(2, -octlevel);
-        scales[i] = scale;
+      // Get scales from octlevels
+      const scales = new Float32Array(this.instanceCount);
+      for (let i = 0; i < this.instanceCount; i++) {
+        scales[i] = this.baseVoxelSize * Math.pow(2, -this.originalOctlevels[i]);
       }
       
       // Create scale buffer
@@ -655,11 +674,11 @@ export class Viewer {
       
       // Set up instance scale attribute
       const instanceScaleLocation = gl.getAttribLocation(this.program!, 'aInstanceScale');
-      if (instanceScaleLocation !== -1) { // Check if the attribute exists in the shader
+      if (instanceScaleLocation !== -1) {
         gl.enableVertexAttribArray(instanceScaleLocation);
         gl.vertexAttribPointer(
           instanceScaleLocation,
-          1,        // 1 component per scale (just a single float)
+          1,        // 1 component per scale
           gl.FLOAT, // data type
           false,    // no normalization
           0,        // stride
@@ -668,123 +687,59 @@ export class Viewer {
         
         // Enable instancing for scales
         gl.vertexAttribDivisor(instanceScaleLocation, 1);
-        
-        const minOctlevel = octlevels.reduce((min, val) => val < min ? val : min, octlevels[0]);
-        const maxOctlevel = octlevels.reduce((max, val) => val > max ? val : max, octlevels[0]);
-        console.log(`Loaded ${scales.length} scales with octlevels from ${minOctlevel} to ${maxOctlevel}`);
       } else {
-        console.warn('Shader does not have aInstanceScale attribute. Make sure shader is updated.');
+        console.error("Could not get aInstanceScale attribute location");
       }
-    }
-    
-    // Store and set up grid values for density field if provided
-    if (gridValues && gridValues.length > 0) {
-      // Set up first set of grid values (0-3)
-      const gridValues1 = new Float32Array(positions.length / 3 * 4);
-      // Set up second set of grid values (4-7)
-      const gridValues2 = new Float32Array(positions.length / 3 * 4);
-      
-      for (let i = 0; i < positions.length / 3; i++) {
-        // Copy grid values 0-3 to first buffer
-        gridValues1[i * 4 + 0] = gridValues[i * 8 + 0]; // grid0_value
-        gridValues1[i * 4 + 1] = gridValues[i * 8 + 1]; // grid1_value
-        gridValues1[i * 4 + 2] = gridValues[i * 8 + 2]; // grid2_value
-        gridValues1[i * 4 + 3] = gridValues[i * 8 + 3]; // grid3_value
-        
-        // Copy grid values 4-7 to second buffer
-        gridValues2[i * 4 + 0] = gridValues[i * 8 + 4]; // grid4_value
-        gridValues2[i * 4 + 1] = gridValues[i * 8 + 5]; // grid5_value
-        gridValues2[i * 4 + 2] = gridValues[i * 8 + 6]; // grid6_value
-        gridValues2[i * 4 + 3] = gridValues[i * 8 + 7]; // grid7_value
-      }
-      
-      // Buffer for grid values 0-3
-      const gridValuesBuffer1 = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, gridValuesBuffer1);
-      gl.bufferData(gl.ARRAY_BUFFER, gridValues1, gl.STATIC_DRAW);
-      
-      // Set up grid values 0-3 attribute
-      const gridValuesLocation1 = gl.getAttribLocation(this.program!, 'aGridValues1');
-      if (gridValuesLocation1 !== -1) {
-        gl.enableVertexAttribArray(gridValuesLocation1);
-        gl.vertexAttribPointer(
-          gridValuesLocation1,
-          4,        // 4 components per attribute (grid values 0-3)
-          gl.FLOAT, // data type
-          false,    // no normalization
-          0,        // stride
-          0         // offset
-        );
-        
-        // Enable instancing for grid values
-        gl.vertexAttribDivisor(gridValuesLocation1, 1);
-      } else {
-        console.warn('Shader does not have aGridValues1 attribute. Make sure shader is updated.');
-      }
-      
-      // Buffer for grid values 4-7
-      const gridValuesBuffer2 = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, gridValuesBuffer2);
-      gl.bufferData(gl.ARRAY_BUFFER, gridValues2, gl.STATIC_DRAW);
-      
-      // Set up grid values 4-7 attribute
-      const gridValuesLocation2 = gl.getAttribLocation(this.program!, 'aGridValues2');
-      if (gridValuesLocation2 !== -1) {
-        gl.enableVertexAttribArray(gridValuesLocation2);
-        gl.vertexAttribPointer(
-          gridValuesLocation2,
-          4,        // 4 components per attribute (grid values 4-7)
-          gl.FLOAT, // data type
-          false,    // no normalization
-          0,        // stride
-          0         // offset
-        );
-        
-        // Enable instancing for grid values
-        gl.vertexAttribDivisor(gridValuesLocation2, 1);
-      } else {
-        console.warn('Shader does not have aGridValues2 attribute. Make sure shader is updated.');
-      }
-      
-      // Store references to buffers for cleanup
-      this.instanceGridValuesBuffer = gridValuesBuffer1;
-      
-      console.log(`Loaded ${positions.length / 3} grid value sets for density field interpolation`);
-    }
-    
-    // Store instance colors if provided
-    if (colors) {
-      this.instanceColorBuffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceColorBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, colors, gl.STATIC_DRAW);
-      
-      // Set up instance color attribute
-      const instanceColorLocation = gl.getAttribLocation(this.program!, 'aInstanceColor');
-      gl.enableVertexAttribArray(instanceColorLocation);
-      gl.vertexAttribPointer(
-        instanceColorLocation,
-        4,        // 4 components per color (RGBA)
-        gl.FLOAT, // data type
-        false,    // no normalization
-        0,        // stride
-        0         // offset
-      );
-      
-      // Enable instancing for colors
-      gl.vertexAttribDivisor(instanceColorLocation, 1);
-      
-      this.useInstanceColors = true;
     } else {
-      this.useInstanceColors = false;
+      // If no octlevels, use a default scale
+      console.warn("No octlevels available, using default scale");
+      
+      // Create a buffer with all the same scale
+      const scales = new Float32Array(this.instanceCount);
+      for (let i = 0; i < this.instanceCount; i++) {
+        scales[i] = this.baseVoxelSize;
+      }
+      
+      // Create scale buffer
+      this.instanceScaleBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceScaleBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, scales, gl.STATIC_DRAW);
+      
+      // Set up instance scale attribute
+      const instanceScaleLocation = gl.getAttribLocation(this.program!, 'aInstanceScale');
+      if (instanceScaleLocation !== -1) {
+        gl.enableVertexAttribArray(instanceScaleLocation);
+        gl.vertexAttribPointer(
+          instanceScaleLocation,
+          1,        // 1 component per scale
+          gl.FLOAT, // data type
+          false,    // no normalization
+          0,        // stride
+          0         // offset
+        );
+        
+        // Enable instancing for scales
+        gl.vertexAttribDivisor(instanceScaleLocation, 1);
+      } else {
+        console.error("Could not get aInstanceScale attribute location");
+      }
     }
-    
-    // Set the instance count to the number of points
-    this.instanceCount = positions.length / 3;
     
     // Unbind the VAO
     gl.bindVertexArray(null);
     
-    console.log(`Loaded point cloud with ${this.instanceCount} points`);
+    // Debug: Check the final state
+    console.log('Point cloud loaded, requesting initial sort');
+    console.log({
+      vao: !!this.vao,
+      program: !!this.program,
+      instanceBuffer: !!this.instanceBuffer,
+      instanceCount: this.instanceCount,
+      sortWorker: !!this.sortWorker
+    });
+    
+    // Request initial sorting
+    this.requestSort();
   }
   
   /**
@@ -857,6 +812,22 @@ export class Viewer {
       // Delete program and shaders
       if (this.program) gl.deleteProgram(this.program);
     }
+    
+    // Clear reference data
+    this.originalPositions = null;
+    this.originalColors = null;
+    this.originalScales = null;
+    this.originalGridValues1 = null;
+    this.originalGridValues2 = null;
+    this.originalOctlevels = null;
+    this.originalOctpaths = null;
+    this.sortedIndices = null;
+    
+    // Terminate the sort worker
+    if (this.sortWorker) {
+      this.sortWorker.terminate();
+      this.sortWorker = null;
+    }
   }
 
   /**
@@ -868,5 +839,216 @@ export class Viewer {
     this.baseVoxelSize = extent; // Use the extent as the base voxel size
     
     console.log(`Scene center: [${center}], extent: ${extent}, base voxel size: ${this.baseVoxelSize}`);
+  }
+
+  /**
+   * Initialize the worker for sorting voxels
+   */
+  private initSortWorker(): void {
+    try {
+      console.log('Initializing sort worker...');
+      
+      // Create worker
+      this.sortWorker = new Worker(new URL('../workers/SortWorker.ts', import.meta.url), { type: 'module' });
+      
+      // Log initialization
+      console.log('Sort worker created, setting up event handlers');
+      
+      // Set up message handler
+      this.sortWorker.onmessage = (event) => {
+        console.log('Received message from sort worker:', event.data.type);
+        
+        const data = event.data;
+        
+        if (data.type === 'ready') {
+          console.log('Sort worker initialized and ready');
+        } else if (data.type === 'sorted') {
+          console.log('Received sorted indices from worker');
+          
+          // Store the sorted indices for rendering
+          this.sortedIndices = data.indices;
+          this.pendingSortRequest = false;
+          
+          if (this.sortedIndices) {
+            console.log(`Received ${this.sortedIndices.length} sorted indices from worker`);
+            
+            // Apply the sorted order to the buffers
+            this.applySortedOrder();
+          } else {
+            console.error('Received null indices from worker');
+          }
+        }
+      };
+      
+      this.sortWorker.onerror = (error) => {
+        console.error('Sort worker error:', error);
+        this.pendingSortRequest = false;
+      };
+      
+      console.log('Sort worker event handlers configured');
+    } catch (error) {
+      console.error('Failed to initialize sort worker:', error);
+    }
+  }
+
+  /**
+   * Apply sorted indices to reorder instance data
+   */
+  private applySortedOrder(): void {
+    if (!this.sortedIndices || this.sortedIndices.length === 0 || !this.originalPositions) {
+      return;
+    }
+    
+    const gl = this.gl!;
+    
+    // Create sorted arrays for all instance attributes
+    const sortedPositions = new Float32Array(this.instanceCount * 3);
+    let sortedColors: Float32Array | null = null;
+    let sortedScales: Float32Array | null = null;
+    let sortedGridValues1: Float32Array | null = null;
+    let sortedGridValues2: Float32Array | null = null;
+    
+    if (this.originalColors) {
+      sortedColors = new Float32Array(this.instanceCount * 4);
+    }
+    
+    if (this.originalScales) {
+      sortedScales = new Float32Array(this.instanceCount);
+    }
+    
+    if (this.originalGridValues1) {
+      sortedGridValues1 = new Float32Array(this.instanceCount * 4);
+    }
+    
+    if (this.originalGridValues2) {
+      sortedGridValues2 = new Float32Array(this.instanceCount * 4);
+    }
+    
+    // Reorder the data based on indices
+    for (let i = 0; i < this.instanceCount; i++) {
+      const srcIdx = this.sortedIndices[i];
+      
+      // Reorder positions
+      sortedPositions[i * 3] = this.originalPositions[srcIdx * 3];
+      sortedPositions[i * 3 + 1] = this.originalPositions[srcIdx * 3 + 1];
+      sortedPositions[i * 3 + 2] = this.originalPositions[srcIdx * 3 + 2];
+      
+      // Reorder colors if present
+      if (sortedColors && this.originalColors) {
+        sortedColors[i * 4] = this.originalColors[srcIdx * 4];
+        sortedColors[i * 4 + 1] = this.originalColors[srcIdx * 4 + 1];
+        sortedColors[i * 4 + 2] = this.originalColors[srcIdx * 4 + 2];
+        sortedColors[i * 4 + 3] = this.originalColors[srcIdx * 4 + 3];
+      }
+      
+      // Reorder scales if present
+      if (sortedScales && this.originalScales) {
+        sortedScales[i] = this.originalScales[srcIdx];
+      }
+      
+      // Reorder grid values if present
+      if (sortedGridValues1 && this.originalGridValues1) {
+        sortedGridValues1[i * 4] = this.originalGridValues1[srcIdx * 4];
+        sortedGridValues1[i * 4 + 1] = this.originalGridValues1[srcIdx * 4 + 1];
+        sortedGridValues1[i * 4 + 2] = this.originalGridValues1[srcIdx * 4 + 2];
+        sortedGridValues1[i * 4 + 3] = this.originalGridValues1[srcIdx * 4 + 3];
+      }
+      
+      if (sortedGridValues2 && this.originalGridValues2) {
+        sortedGridValues2[i * 4] = this.originalGridValues2[srcIdx * 4];
+        sortedGridValues2[i * 4 + 1] = this.originalGridValues2[srcIdx * 4 + 1];
+        sortedGridValues2[i * 4 + 2] = this.originalGridValues2[srcIdx * 4 + 2];
+        sortedGridValues2[i * 4 + 3] = this.originalGridValues2[srcIdx * 4 + 3];
+      }
+    }
+    
+    // Update the GPU buffers with the sorted data
+    gl.bindVertexArray(this.vao);
+    
+    // Update positions
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, sortedPositions, gl.STATIC_DRAW);
+    
+    // Update colors
+    if (sortedColors && this.instanceColorBuffer) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceColorBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, sortedColors, gl.STATIC_DRAW);
+    }
+    
+    // Update scales
+    if (sortedScales && this.instanceScaleBuffer && this.originalScales) {
+      console.log("Updating scale buffer with sorted values");
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceScaleBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, sortedScales, gl.STATIC_DRAW);
+    }
+    
+    // Update grid values
+    if (sortedGridValues1 && this.instanceGridValuesBuffer) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceGridValuesBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, sortedGridValues1, gl.STATIC_DRAW);
+    }
+    
+    gl.bindVertexArray(null);
+  }
+
+  /**
+   * Request voxel sorting based on current camera position
+   */
+  private requestSort(): void {
+    if (!this.sortWorker || this.pendingSortRequest || this.instanceCount === 0 || !this.originalPositions) {
+      return;
+    }
+    
+    // Get camera position and target
+    const cameraPos = this.camera.getPosition();
+    const cameraTarget = this.camera.getTarget();
+    
+    // Send data to worker for sorting
+    this.pendingSortRequest = true;
+    
+    // Clone positions to send to worker
+    const positions = new Float32Array(this.originalPositions);
+    
+    // Create copies of octree data to send to worker
+    let octlevels: Uint8Array | undefined = undefined;
+    let octpaths: Uint32Array | undefined = undefined;
+    
+    // Use the original octree data if available
+    if (this.originalOctlevels) {
+      octlevels = new Uint8Array(this.originalOctlevels);
+      console.log(`Sending ${octlevels.length} octlevels to sort worker`);
+    }
+    
+    if (this.originalOctpaths) {
+      octpaths = new Uint32Array(this.originalOctpaths);
+      console.log(`Sending ${octpaths.length} octpaths to sort worker`);
+    }
+    
+    // Send the data to the worker
+    this.sortWorker.postMessage({
+      type: 'sort',
+      positions: positions,
+      cameraPosition: cameraPos,
+      cameraTarget: cameraTarget,
+      octlevels: octlevels,
+      octpaths: octpaths
+    }, [positions.buffer]);
+    
+    // Transfer buffers to avoid copying large data
+    if (octlevels) {
+      this.sortWorker.postMessage({}, [octlevels.buffer]);
+    }
+    
+    if (octpaths) {
+      this.sortWorker.postMessage({}, [octpaths.buffer]);
+    }
+  }
+
+  /**
+   * React to camera movement
+   */
+  public handleCameraChange(): void {
+    // Request a new sort when the camera changes
+    this.requestSort();
   }
 }

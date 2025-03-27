@@ -112,6 +112,10 @@ export class Camera {
   public getPosition(): vec3 {
     return this.position;
   }
+
+  public getTarget(): vec3 {
+    return this.target;
+  }
   
   /**
    * Orbit the camera around the target
