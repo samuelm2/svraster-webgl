@@ -54,6 +54,23 @@ export class Viewer {
 
   // Add a flag for this debug feature
 
+  // Add these properties to the Viewer class definition at the top
+  private isDragging: boolean = false;
+  private isPanning: boolean = false;
+  private lastMouseX: number = 0;
+  private lastMouseY: number = 0;
+  private orbitSpeed: number = 0.005;
+  private panSpeed: number = 0.01;
+  private zoomSpeed: number = 0.1;
+
+  // Add this property to the Viewer class
+  private sceneTransformMatrix: Float32Array = new Float32Array([
+    1, 0, 0, 0,   // First row
+    0, -1, 0, 0,  // Second row - negate Y to flip the scene vertically
+    0, 0, 1, 0,   // Third row
+    0, 0, 0, 1    // Fourth row
+  ]);
+
   constructor(containerId: string) {
     // Create canvas element
     this.canvas = document.createElement('canvas');
@@ -83,10 +100,10 @@ export class Viewer {
     this.gl.enable(this.gl.BLEND);
     this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
     
-    // Initialize camera
+    // Initialize camera - revert to original positive Z position
     this.camera = new Camera();
-    this.camera.setPosition(0, 0, 15); // Set initial camera position
-    this.camera.setTarget(0, 0, 0);    // Look at origin
+    this.camera.setPosition(0, 0, 15); // Back to positive Z
+    this.camera.setTarget(0, 0, 0);    // Still look at origin
     
     // Fix: Initialize last camera position using explicit array
     const pos = this.camera.getPosition();
@@ -113,6 +130,9 @@ export class Viewer {
     
     // Initialize the sort worker
     this.initSortWorker();
+    
+    // Add mouse event listeners for orbital controls
+    this.initOrbitControls();
     
     this.render(0);
   }
@@ -142,7 +162,7 @@ export class Viewer {
   private initShaders(): void {
     const gl = this.gl!;
     
-    // Updated vertex shader to pass more data to fragment shader
+    // Updated vertex shader to include scene transformation matrix
     const vsSource = `#version 300 es
       in vec4 aVertexPosition;
       in vec4 aVertexColor;
@@ -152,6 +172,7 @@ export class Viewer {
       
       uniform mat4 uProjectionMatrix;
       uniform mat4 uViewMatrix;
+      uniform mat4 uSceneTransformMatrix; // Add scene transform matrix uniform
       uniform bool uUseInstanceColors;
       
       out vec4 vColor;
@@ -163,17 +184,20 @@ export class Viewer {
         // Scale the vertex position by instance scale
         vec4 scaledPosition = vec4(aVertexPosition.xyz * aInstanceScale, aVertexPosition.w);
         
-        // Position is scaled vertex position + instance offset
-        vec4 instancePosition = scaledPosition + vec4(aInstanceOffset.xyz, 0.0);
+        // Transform instance offset by scene transform matrix
+        vec4 transformedOffset = uSceneTransformMatrix * vec4(aInstanceOffset.xyz, 1.0);
+        
+        // Position is scaled vertex position + transformed instance offset
+        vec4 instancePosition = scaledPosition + vec4(transformedOffset.xyz, 0.0);
         
         // Calculate final position
         gl_Position = uProjectionMatrix * uViewMatrix * instancePosition;
         
-        // Pass world position of the vertex
+        // Pass world position of the vertex - use transformed position
         vWorldPos = instancePosition.xyz;
         
-        // Calculate and pass voxel center (instance position = center of voxel)
-        vVoxelCenter = aInstanceOffset.xyz;
+        // Calculate and pass transformed voxel center
+        vVoxelCenter = transformedOffset.xyz;
         
         // Pass scale to fragment shader
         vScale = aInstanceScale;
@@ -515,29 +539,18 @@ export class Viewer {
     // Set uniforms with camera matrices
     const projectionMatrixLocation = gl.getUniformLocation(this.program, 'uProjectionMatrix');
     const viewMatrixLocation = gl.getUniformLocation(this.program, 'uViewMatrix');
+    const sceneTransformMatrixLocation = gl.getUniformLocation(this.program, 'uSceneTransformMatrix');
     const useInstanceColorsLocation = gl.getUniformLocation(this.program, 'uUseInstanceColors');
     const cameraPositionLocation = gl.getUniformLocation(this.program, 'uCameraPosition');
     
-    // Debug: Check if uniform locations are valid
-    if (!projectionMatrixLocation || !viewMatrixLocation || !cameraPositionLocation) {
-      console.error('Failed to get uniform locations');
-      console.log({
-        projectionMatrixLocation,
-        viewMatrixLocation,
-        useInstanceColorsLocation,
-        cameraPositionLocation
-      });
-    }
-    
+    // Pass matrices to shader
     gl.uniformMatrix4fv(projectionMatrixLocation, false, this.camera.getProjectionMatrix());
     gl.uniformMatrix4fv(viewMatrixLocation, false, this.camera.getViewMatrix());
+    gl.uniformMatrix4fv(sceneTransformMatrixLocation, false, this.sceneTransformMatrix);
     gl.uniform1i(useInstanceColorsLocation, 1);
     
     // Pass camera position to the shader
     gl.uniform3f(cameraPositionLocation, cameraPos[0], cameraPos[1], cameraPos[2]);
-    
-    // Debug: Log rendering attempt
-    console.log(`Rendering ${this.instanceCount} instances`);
     
     // Draw instanced geometry
     gl.drawElementsInstanced(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_SHORT, 0, this.instanceCount);
@@ -1009,6 +1022,17 @@ export class Viewer {
     // Clone positions to send to worker
     const positions = new Float32Array(this.originalPositions);
     
+    // Apply the scene transformation to the positions - flip Y axis
+    for (let i = 0; i < positions.length / 3; i++) {
+      // Extract position
+      const x = positions[i * 3];
+      const y = positions[i * 3 + 1];
+      const z = positions[i * 3 + 2];
+      
+      // Apply transformation (this just flips Y)
+      positions[i * 3 + 1] = -y;
+    }
+    
     // Create copies of octree data to send to worker
     let octlevels: Uint8Array | undefined = undefined;
     let octpaths: Uint32Array | undefined = undefined;
@@ -1050,5 +1074,171 @@ export class Viewer {
   public handleCameraChange(): void {
     // Request a new sort when the camera changes
     this.requestSort();
+  }
+
+  /**
+   * Initialize orbital camera controls
+   */
+  private initOrbitControls(): void {
+    // Mouse down event
+    this.canvas.addEventListener('mousedown', (event: MouseEvent) => {
+      if (event.button === 0) { // Left click
+        this.isDragging = true;
+        this.isPanning = false;
+      } else if (event.button === 2) { // Right click
+        this.isPanning = true;
+        this.isDragging = false;
+        // Prevent context menu on right click
+        event.preventDefault();
+      }
+      this.lastMouseX = event.clientX;
+      this.lastMouseY = event.clientY;
+    });
+    
+    // Mouse move event
+    this.canvas.addEventListener('mousemove', (event: MouseEvent) => {
+      if (!this.isDragging && !this.isPanning) return;
+      
+      const deltaX = event.clientX - this.lastMouseX;
+      const deltaY = event.clientY - this.lastMouseY;
+      
+      if (this.isDragging) {
+        // Orbit the camera
+        this.orbit(deltaX, deltaY);
+      } else if (this.isPanning) {
+        // Pan the camera
+        this.pan(deltaX, deltaY);
+      }
+      
+      this.lastMouseX = event.clientX;
+      this.lastMouseY = event.clientY;
+      this.handleCameraChange();
+    });
+    
+    // Mouse up event
+    window.addEventListener('mouseup', () => {
+      this.isDragging = false;
+      this.isPanning = false;
+    });
+    
+    // Mouse wheel event for zooming
+    this.canvas.addEventListener('wheel', (event: WheelEvent) => {
+      event.preventDefault();
+      // Zoom in or out
+      const zoomAmount = event.deltaY * this.zoomSpeed * 0.01;
+      this.zoom(zoomAmount);
+      this.handleCameraChange();
+    });
+    
+    // Prevent context menu on right click
+    this.canvas.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+    });
+  }
+  
+  /**
+   * Orbit the camera around the target
+   */
+  private orbit(deltaX: number, deltaY: number): void {
+    const pos = this.camera.getPosition();
+    const target = this.camera.getTarget();
+    
+    // Calculate the camera's current position relative to the target
+    const relX = pos[0] - target[0];
+    const relY = pos[1] - target[1];
+    const relZ = pos[2] - target[2];
+    
+    // Calculate distance from target
+    const distance = Math.sqrt(relX * relX + relY * relY + relZ * relZ);
+    
+    // Calculate current spherical coordinates
+    let theta = Math.atan2(relX, relZ);
+    let phi = Math.acos(relY / distance);
+    
+    // Update angles based on mouse movement - revert back to original approach
+    theta -= deltaX * this.orbitSpeed;
+    phi = Math.max(0.1, Math.min(Math.PI - 0.1, phi + deltaY * this.orbitSpeed)); // Back to original plus sign
+    
+    // Convert back to Cartesian coordinates
+    const newRelX = distance * Math.sin(phi) * Math.sin(theta);
+    const newRelY = distance * Math.cos(phi);
+    const newRelZ = distance * Math.sin(phi) * Math.cos(theta);
+    
+    // Update camera position
+    this.camera.setPosition(
+      target[0] + newRelX,
+      target[1] + newRelY,
+      target[2] + newRelZ
+    );
+  }
+  
+  /**
+   * Pan the camera (move target and camera together)
+   */
+  private pan(deltaX: number, deltaY: number): void {
+    const pos = this.camera.getPosition();
+    const target = this.camera.getTarget();
+    
+    // Calculate forward vector (from camera to target)
+    const forwardX = target[0] - pos[0];
+    const forwardY = target[1] - pos[1];
+    const forwardZ = target[2] - pos[2];
+    const forwardLength = Math.sqrt(forwardX * forwardX + forwardY * forwardY + forwardZ * forwardZ);
+    
+    // Normalize forward vector
+    const forwardNormX = forwardX / forwardLength;
+    const forwardNormY = forwardY / forwardLength;
+    const forwardNormZ = forwardZ / forwardLength;
+    
+    // Calculate right vector (cross product of forward and up)
+    // Back to original up vector
+    const upX = 0, upY = 1, upZ = 0; // Standard world up vector
+    const rightX = forwardNormZ * upY - forwardNormY * upZ;
+    const rightY = forwardNormX * upZ - forwardNormZ * upX;
+    const rightZ = forwardNormY * upX - forwardNormX * upY;
+    
+    // Calculate normalized up vector (cross product of right and forward)
+    const upNormX = rightY * forwardNormZ - rightZ * forwardNormY;
+    const upNormY = rightZ * forwardNormX - rightX * forwardNormZ;
+    const upNormZ = rightX * forwardNormY - rightY * forwardNormX;
+    
+    // Calculate pan amounts based on delta
+    const panAmount = this.panSpeed * Math.max(1, forwardLength / 10);
+    const panX = -(rightX * -deltaX + upNormX * deltaY) * panAmount;
+    const panY = -(rightY * -deltaX + upNormY * deltaY) * panAmount;
+    const panZ = -(rightZ * -deltaX + upNormZ * deltaY) * panAmount;
+    
+    // Move both camera and target
+    this.camera.setPosition(pos[0] + panX, pos[1] + panY, pos[2] + panZ);
+    this.camera.setTarget(target[0] + panX, target[1] + panY, target[2] + panZ);
+  }
+  
+  /**
+   * Zoom the camera by adjusting distance to target
+   */
+  private zoom(zoomAmount: number): void {
+    const pos = this.camera.getPosition();
+    const target = this.camera.getTarget();
+    
+    // Calculate direction vector from target to camera
+    const dirX = pos[0] - target[0];
+    const dirY = pos[1] - target[1];
+    const dirZ = pos[2] - target[2];
+    
+    // Get current distance
+    const distance = Math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
+    
+    // Calculate new distance with zoom factor
+    const newDistance = Math.max(0.1, distance * (1 + zoomAmount));
+    
+    // Calculate zoom ratio
+    const ratio = newDistance / distance;
+    
+    // Update camera position
+    this.camera.setPosition(
+      target[0] + dirX * ratio,
+      target[1] + dirY * ratio,
+      target[2] + dirZ * ratio
+    );
   }
 }
