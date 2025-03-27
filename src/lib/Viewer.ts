@@ -71,8 +71,14 @@ export class Viewer {
     0, 0, 0, 1    // Fourth row
   ]);
 
-  // Add these properties to the Viewer class definition
+  // Add these properties to the Viewer class
   private instanceDensityBuffer: WebGLBuffer | null = null;
+
+  // Add these properties to the Viewer class
+  private instanceSH1Buffer: WebGLBuffer | null = null;
+  private instanceSH1Buffer2: WebGLBuffer | null = null;
+  private instanceSH1Buffer3: WebGLBuffer | null = null;  // Added for 9th value
+  private originalSH1Values: Float32Array | null = null;
 
   constructor(containerId: string) {
     // Create canvas element
@@ -167,25 +173,79 @@ export class Viewer {
     
     // Updated vertex shader to pass density values to fragment shader
     const vsSource = `#version 300 es
+      precision mediump float;
+      
       in vec4 aVertexPosition;
       in vec4 aVertexColor;
       in vec4 aInstanceOffset;
-      in vec4 aInstanceColor;
+      in vec4 aInstanceColor;    // SH0 - constant term
+      in vec3 aInstanceSH1_0;    // First 3 SH1 coefficients
+      in vec3 aInstanceSH1_1;    // Next 3 SH1 coefficients
+      in vec3 aInstanceSH1_2;    // Last 3 SH1 coefficients
       in float aInstanceScale;
-      in vec4 aInstanceDensity0;   // Density values for 4 corners
-      in vec4 aInstanceDensity1;   // Density values for other 4 corners
+      in vec4 aInstanceDensity0; // Density values for 4 corners
+      in vec4 aInstanceDensity1; // Density values for other 4 corners
       
       uniform mat4 uProjectionMatrix;
       uniform mat4 uViewMatrix;
       uniform mat4 uSceneTransformMatrix;
       uniform bool uUseInstanceColors;
+      uniform vec3 uCameraPosition;
       
-      out vec4 vColor;
       out vec3 vWorldPos;
       out float vScale;
-      out vec3 vVoxelCenter;
-      out vec4 vDensity0;          // Pass density values to fragment shader
+      out vec3 vVoxelCenter;     // Still needed for density calculations
+      out vec4 vDensity0;        // Pass density values to fragment shader
       out vec4 vDensity1;
+      out vec3 vColor;           // Now pass pre-calculated color
+      
+      // Spherical Harmonics evaluation with full 9 coefficients (moved from fragment shader)
+      vec3 evaluateSH(vec4 sh0, vec3 sh1_0, vec3 sh1_1, vec3 sh1_2, vec3 direction) {
+        // Normalize direction vector
+        vec3 dir = normalize(direction);
+        
+        // SH0 is constant term (already in RGB)
+        vec3 color = sh0.rgb;
+        
+        // Calculate basis functions for SH (using standard SH basis functions)
+        // Y_0,0 = 0.282095 (constant, already handled with sh0)
+        
+        // Order 1 (linear terms)
+        // Y_1,-1 = 0.488603 * y
+        float basis1 = 0.488603 * dir.y;
+        // Y_1,0 = 0.488603 * z
+        float basis2 = 0.488603 * dir.z;
+        // Y_1,1 = 0.488603 * x
+        float basis3 = 0.488603 * dir.x;
+        
+        // Order 2 (quadratic terms)
+        // Y_2,-2 = 1.092548 * x * y
+        float basis4 = 1.092548 * dir.x * dir.y;
+        // Y_2,-1 = 1.092548 * y * z
+        float basis5 = 1.092548 * dir.y * dir.z;
+        // Y_2,0 = 0.315392 * (3 * z * z - 1)
+        float basis6 = 0.315392 * (3.0 * dir.z * dir.z - 1.0);
+        // Y_2,1 = 1.092548 * x * z
+        float basis7 = 1.092548 * dir.x * dir.z;
+        // Y_2,2 = 0.546274 * (x * x - y * y)
+        float basis8 = 0.546274 * (dir.x * dir.x - dir.y * dir.y);
+        
+        // Apply spherical harmonic coefficients
+        color += vec3(sh1_0.x * basis1); // Y_1,-1
+        color += vec3(sh1_0.y * basis2); // Y_1,0
+        color += vec3(sh1_0.z * basis3); // Y_1,1
+        
+        color += vec3(sh1_1.x * basis4); // Y_2,-2
+        color += vec3(sh1_1.y * basis5); // Y_2,-1
+        color += vec3(sh1_1.z * basis6); // Y_2,0
+        
+        color += vec3(sh1_2.x * basis7); // Y_2,1
+        color += vec3(sh1_2.y * basis8); // Y_2,2
+        // The 9th coefficient (sh1_2.z) is unused or could be used for a custom term
+        
+        // Clamp to valid RGB range
+        return clamp(color, 0.0, 1.0);
+      }
       
       void main() {
         // Scale the vertex position by instance scale
@@ -209,12 +269,16 @@ export class Viewer {
         // Pass scale to fragment shader
         vScale = aInstanceScale;
         
+        // Calculate viewing direction from voxel center to camera
+        vec3 viewDir = normalize(uCameraPosition - vVoxelCenter);
+        
+        // Calculate color using SH and pass to fragment shader
+        vec4 sh0 = uUseInstanceColors ? aInstanceColor : aVertexColor;
+        vColor = evaluateSH(sh0, aInstanceSH1_0, aInstanceSH1_1, aInstanceSH1_2, viewDir);
+        
         // Pass density values to fragment shader
         vDensity0 = aInstanceDensity0;
         vDensity1 = aInstanceDensity1;
-        
-        // Use instance color if enabled, otherwise use vertex color
-        vColor = uUseInstanceColors ? aInstanceColor : aVertexColor;
       }
     `;
     
@@ -222,12 +286,12 @@ export class Viewer {
     const fsSource = `#version 300 es
       precision mediump float;
       
-      in vec4 vColor;
       in vec3 vWorldPos;
       in float vScale;
       in vec3 vVoxelCenter;
-      in vec4 vDensity0;       // Density values for corners 0-3
-      in vec4 vDensity1;       // Density values for corners 4-7
+      in vec4 vDensity0;         // Density values for corners 0-3
+      in vec4 vDensity1;         // Density values for corners 4-7
+      in vec3 vColor;            // Pre-calculated color from vertex shader
       
       uniform vec3 uCameraPosition;
       
@@ -248,7 +312,7 @@ export class Viewer {
         return vec2(tNear, tFar);
       }
       
-      // Updated trilinear interpolation function that accounts for y-axis flip
+      // Updated trilinear interpolation function
       float trilinearInterpolation(vec3 pos, vec3 boxMin, vec3 boxMax, vec4 density0, vec4 density1) {
         // Normalize position within the box [0,1]
         vec3 normPos = (pos - boxMin) / (boxMax - boxMin);
@@ -323,11 +387,11 @@ export class Viewer {
           // Average the densities from all three samples
           float avgDensity = (density1 + density2 + density3) / 3.0;
           
-          // Calculate opacity based on average density and intersection length
+          // Calculate opacity based on average density
           float alpha = avgDensity;
           
-          // Output color with calculated alpha
-          fragColor = vec4(vColor.rgb, alpha);
+          // Use the pre-calculated color with calculated alpha
+          fragColor = vec4(vColor, alpha);
         } else {
           discard;
         }
@@ -616,6 +680,13 @@ export class Viewer {
     gl.uniform3f(cameraPositionLocation, cameraPos[0], cameraPos[1], cameraPos[2]);
     
     // Draw instanced geometry
+    console.log('Drawing with instance count:', this.instanceCount);
+    if (this.instanceCount <= 0) {
+        console.warn('No instances to draw');
+        requestAnimationFrame((time) => this.render(time));
+        return;
+    }
+    
     gl.drawElementsInstanced(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_SHORT, 0, this.instanceCount);
     
     // Check for GL errors
@@ -626,6 +697,17 @@ export class Viewer {
     
     // Unbind the VAO
     gl.bindVertexArray(null);
+    
+    // Debug: Log SH1 values periodically to check if they're being used
+    if (this.lastFrameTime === 0 && this.originalSH1Values) {
+      const nonZeroCount = Array.from(this.originalSH1Values).filter(v => Math.abs(v) > 0.0001).length;
+      console.log(`SH1 values check: ${nonZeroCount} non-zero values out of ${this.originalSH1Values.length}`);
+      if (nonZeroCount > 0) {
+        console.log('SH1 values are present and will affect rendering');
+      } else {
+        console.log('Warning: All SH1 values are near zero, no directional lighting effect will be visible');
+      }
+    }
     
     // Request animation frame for continuous rendering
     requestAnimationFrame((time) => this.render(time));
@@ -639,14 +721,15 @@ export class Viewer {
     colors?: Float32Array,
     octlevels?: Uint8Array,
     octpaths?: Uint32Array,
-    gridValues?: Float32Array
+    gridValues?: Float32Array,
+    restValues?: Float32Array  // Contains SH coefficients beyond SH0
   ): void {
     console.log(`Loading point cloud with ${positions.length / 3} points`);
     
     // Save original data for sorting
     this.originalPositions = new Float32Array(positions);
     
-    // Save colors
+    // Save SH0 (base colors)
     if (colors) {
       this.originalColors = new Float32Array(colors);
     } else {
@@ -657,6 +740,37 @@ export class Viewer {
         this.originalColors[i * 4 + 2] = 1.0; // B
         this.originalColors[i * 4 + 3] = 1.0; // A
       }
+    }
+    
+    // Extract SH1 coefficients from restValues
+    if (restValues && restValues.length > 0) {
+      // Each vertex has multiple rest values, we need to extract 9 values for SH1
+      const restPerVertex = restValues.length / positions.length * 3;
+      console.log(`Found ${restPerVertex} rest values per vertex, extracting SH1 (9 values per vertex)`);
+      
+      // We need space for 9 values per vertex
+      this.originalSH1Values = new Float32Array(positions.length / 3 * 9);
+      
+      for (let i = 0; i < positions.length / 3; i++) {
+        // Extract 9 values from restValues for each vertex
+        for (let j = 0; j < 9; j++) {
+          // Only extract if we have enough values
+          if (j < restPerVertex) {
+            this.originalSH1Values[i * 9 + j] = restValues[i * restPerVertex + j];
+          } else {
+            // If not enough rest values, set to 0
+            this.originalSH1Values[i * 9 + j] = 0.0;
+          }
+        }
+      }
+      
+      console.log(`Extracted ${this.originalSH1Values.length / 9} SH1 sets with 9 values each`);
+      console.log('SH1 sample values (first vertex):', 
+                  this.originalSH1Values.slice(0, 9));
+    } else {
+      // If no rest values, use zeros (no directional lighting)
+      this.originalSH1Values = new Float32Array(positions.length / 3 * 9);
+      console.log('No SH1 values found, using default (no directional lighting)');
     }
     
     // Save octree data
@@ -766,6 +880,7 @@ export class Viewer {
     gl.vertexAttribDivisor(instanceColorLocation, 1);
     
     // Set the instance count
+    console.log('Setting instance count:', positions.length / 3);
     this.instanceCount = positions.length / 3;
     
     // Set up instance scales
@@ -853,6 +968,93 @@ export class Viewer {
       gl.vertexAttribDivisor(instanceDensity1Location, 1);
     }
     
+    // Set up SH1 values - first 3 coefficients
+    const instanceSH1_0Location = gl.getAttribLocation(this.program!, 'aInstanceSH1_0');
+    console.log('SH1_0 attribute location:', instanceSH1_0Location);
+    if (instanceSH1_0Location !== -1 && this.originalSH1Values) {
+      this.instanceSH1Buffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceSH1Buffer);
+      
+      // Create a buffer for the first 3 SH1 values
+      const sh1_0Values = new Float32Array(this.instanceCount * 3);
+      for (let i = 0; i < this.instanceCount; i++) {
+        sh1_0Values[i * 3 + 0] = this.originalSH1Values[i * 9 + 0];
+        sh1_0Values[i * 3 + 1] = this.originalSH1Values[i * 9 + 1];
+        sh1_0Values[i * 3 + 2] = this.originalSH1Values[i * 9 + 2];
+      }
+      
+      gl.bufferData(gl.ARRAY_BUFFER, sh1_0Values, gl.STATIC_DRAW);
+      
+      gl.enableVertexAttribArray(instanceSH1_0Location);
+      gl.vertexAttribPointer(
+        instanceSH1_0Location,
+        3,        // 3 components
+        gl.FLOAT,
+        false,
+        0,
+        0
+      );
+      gl.vertexAttribDivisor(instanceSH1_0Location, 1);
+    }
+
+    // Set up SH1 values - next 3 coefficients
+    const instanceSH1_1Location = gl.getAttribLocation(this.program!, 'aInstanceSH1_1');
+    console.log('SH1_1 attribute location:', instanceSH1_1Location);
+    if (instanceSH1_1Location !== -1 && this.originalSH1Values) {
+      this.instanceSH1Buffer2 = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceSH1Buffer2);
+      
+      // Create a buffer for the next 3 SH1 values
+      const sh1_1Values = new Float32Array(this.instanceCount * 3);
+      for (let i = 0; i < this.instanceCount; i++) {
+        sh1_1Values[i * 3 + 0] = this.originalSH1Values[i * 9 + 3];
+        sh1_1Values[i * 3 + 1] = this.originalSH1Values[i * 9 + 4];
+        sh1_1Values[i * 3 + 2] = this.originalSH1Values[i * 9 + 5];
+      }
+      
+      gl.bufferData(gl.ARRAY_BUFFER, sh1_1Values, gl.STATIC_DRAW);
+      
+      gl.enableVertexAttribArray(instanceSH1_1Location);
+      gl.vertexAttribPointer(
+        instanceSH1_1Location,
+        3,        // 3 components
+        gl.FLOAT,
+        false,
+        0,
+        0
+      );
+      gl.vertexAttribDivisor(instanceSH1_1Location, 1);
+    }
+    
+    // Set up SH1 values - last 3 coefficients
+    const instanceSH1_2Location = gl.getAttribLocation(this.program!, 'aInstanceSH1_2');
+    console.log('SH1_2 attribute location:', instanceSH1_2Location);
+    if (instanceSH1_2Location !== -1 && this.originalSH1Values) {
+      this.instanceSH1Buffer3 = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceSH1Buffer3);
+      
+      // Create a buffer for the last 3 SH1 values
+      const sh1_2Values = new Float32Array(this.instanceCount * 3);
+      for (let i = 0; i < this.instanceCount; i++) {
+        sh1_2Values[i * 3 + 0] = this.originalSH1Values[i * 9 + 6];
+        sh1_2Values[i * 3 + 1] = this.originalSH1Values[i * 9 + 7];
+        sh1_2Values[i * 3 + 2] = this.originalSH1Values[i * 9 + 8];
+      }
+      
+      gl.bufferData(gl.ARRAY_BUFFER, sh1_2Values, gl.STATIC_DRAW);
+      
+      gl.enableVertexAttribArray(instanceSH1_2Location);
+      gl.vertexAttribPointer(
+        instanceSH1_2Location,
+        3,        // 3 components
+        gl.FLOAT,
+        false,
+        0,
+        0
+      );
+      gl.vertexAttribDivisor(instanceSH1_2Location, 1);
+    }
+    
     // Unbind the VAO
     gl.bindVertexArray(null);
     
@@ -929,6 +1131,10 @@ export class Viewer {
       
       // Delete program and shaders
       if (this.program) gl.deleteProgram(this.program);
+      
+      if (this.instanceSH1Buffer) gl.deleteBuffer(this.instanceSH1Buffer);
+      if (this.instanceSH1Buffer2) gl.deleteBuffer(this.instanceSH1Buffer2);
+      if (this.instanceSH1Buffer3) gl.deleteBuffer(this.instanceSH1Buffer3);
     }
     
     // Clear reference data
@@ -939,6 +1145,7 @@ export class Viewer {
     this.originalGridValues2 = null;
     this.originalOctlevels = null;
     this.originalOctpaths = null;
+    this.originalSH1Values = null;
     this.sortedIndices = null;
     
     // Terminate the sort worker
@@ -1014,9 +1221,20 @@ export class Viewer {
    */
   private applySortedOrder(): void {
     if (!this.sortedIndices || this.sortedIndices.length === 0 || !this.originalPositions) {
-      return;
+        console.warn('Missing data for sorting:', {
+            hasIndices: !!this.sortedIndices,
+            indicesLength: this.sortedIndices?.length,
+            hasPositions: !!this.originalPositions
+        });
+        return;
     }
     
+    console.log('Applying sort order:', {
+        instanceCount: this.instanceCount,
+        indicesLength: this.sortedIndices.length,
+        firstFewIndices: Array.from(this.sortedIndices.slice(0, 5))
+    });
+
     const gl = this.gl!;
     
     // Create sorted arrays
@@ -1025,62 +1243,81 @@ export class Viewer {
     let sortedScales: Float32Array | null = null;
     let sortedGridValues1: Float32Array | null = null;
     let sortedGridValues2: Float32Array | null = null;
+    let sortedSH1Values: Float32Array | null = null;
     
+    // Apply sorting to positions
+    for (let i = 0; i < this.instanceCount; i++) {
+        const srcIdx = this.sortedIndices[i];
+        sortedPositions[i * 3 + 0] = this.originalPositions[srcIdx * 3 + 0];
+        sortedPositions[i * 3 + 1] = this.originalPositions[srcIdx * 3 + 1];
+        sortedPositions[i * 3 + 2] = this.originalPositions[srcIdx * 3 + 2];
+    }
+    
+    // Apply sorting to colors
     if (this.originalColors) {
-      sortedColors = new Float32Array(this.instanceCount * 4);
+        sortedColors = new Float32Array(this.instanceCount * 4);
+        for (let i = 0; i < this.instanceCount; i++) {
+            const srcIdx = this.sortedIndices[i];
+            sortedColors[i * 4 + 0] = this.originalColors[srcIdx * 4 + 0];
+            sortedColors[i * 4 + 1] = this.originalColors[srcIdx * 4 + 1];
+            sortedColors[i * 4 + 2] = this.originalColors[srcIdx * 4 + 2];
+            sortedColors[i * 4 + 3] = this.originalColors[srcIdx * 4 + 3];
+        }
     }
     
+    // Apply sorting to scales
     if (this.originalScales) {
-      sortedScales = new Float32Array(this.instanceCount);
+        sortedScales = new Float32Array(this.instanceCount);
+        for (let i = 0; i < this.instanceCount; i++) {
+            const srcIdx = this.sortedIndices[i];
+            sortedScales[i] = this.originalScales[srcIdx];
+        }
     }
     
+    // Apply sorting to grid values
     if (this.originalGridValues1) {
-      sortedGridValues1 = new Float32Array(this.instanceCount * 4);
+        sortedGridValues1 = new Float32Array(this.instanceCount * 4);
+        for (let i = 0; i < this.instanceCount; i++) {
+            const srcIdx = this.sortedIndices[i];
+            sortedGridValues1[i * 4 + 0] = this.originalGridValues1[srcIdx * 4 + 0];
+            sortedGridValues1[i * 4 + 1] = this.originalGridValues1[srcIdx * 4 + 1];
+            sortedGridValues1[i * 4 + 2] = this.originalGridValues1[srcIdx * 4 + 2];
+            sortedGridValues1[i * 4 + 3] = this.originalGridValues1[srcIdx * 4 + 3];
+        }
     }
     
     if (this.originalGridValues2) {
-      sortedGridValues2 = new Float32Array(this.instanceCount * 4);
+        sortedGridValues2 = new Float32Array(this.instanceCount * 4);
+        for (let i = 0; i < this.instanceCount; i++) {
+            const srcIdx = this.sortedIndices[i];
+            sortedGridValues2[i * 4 + 0] = this.originalGridValues2[srcIdx * 4 + 0];
+            sortedGridValues2[i * 4 + 1] = this.originalGridValues2[srcIdx * 4 + 1];
+            sortedGridValues2[i * 4 + 2] = this.originalGridValues2[srcIdx * 4 + 2];
+            sortedGridValues2[i * 4 + 3] = this.originalGridValues2[srcIdx * 4 + 3];
+        }
     }
-    
-    // Reorder based on indices
-    for (let i = 0; i < this.instanceCount; i++) {
-      const srcIdx = this.sortedIndices[i];
-      
-      // Reorder positions
-      sortedPositions[i * 3] = this.originalPositions[srcIdx * 3];
-      sortedPositions[i * 3 + 1] = this.originalPositions[srcIdx * 3 + 1];
-      sortedPositions[i * 3 + 2] = this.originalPositions[srcIdx * 3 + 2];
-      
-      // Reorder colors
-      if (sortedColors && this.originalColors) {
-        sortedColors[i * 4] = this.originalColors[srcIdx * 4];
-        sortedColors[i * 4 + 1] = this.originalColors[srcIdx * 4 + 1];
-        sortedColors[i * 4 + 2] = this.originalColors[srcIdx * 4 + 2];
-        sortedColors[i * 4 + 3] = this.originalColors[srcIdx * 4 + 3];
-      }
-      
-      // Reorder scales
-      if (sortedScales && this.originalScales) {
-        sortedScales[i] = this.originalScales[srcIdx];
-      }
-      
-      // Reorder grid values 1 (first 4 corners)
-      if (sortedGridValues1 && this.originalGridValues1) {
-        sortedGridValues1[i * 4] = this.originalGridValues1[srcIdx * 4];
-        sortedGridValues1[i * 4 + 1] = this.originalGridValues1[srcIdx * 4 + 1];
-        sortedGridValues1[i * 4 + 2] = this.originalGridValues1[srcIdx * 4 + 2];
-        sortedGridValues1[i * 4 + 3] = this.originalGridValues1[srcIdx * 4 + 3];
-      }
-      
-      // Reorder grid values 2 (other 4 corners)
-      if (sortedGridValues2 && this.originalGridValues2) {
-        sortedGridValues2[i * 4] = this.originalGridValues2[srcIdx * 4];
-        sortedGridValues2[i * 4 + 1] = this.originalGridValues2[srcIdx * 4 + 1];
-        sortedGridValues2[i * 4 + 2] = this.originalGridValues2[srcIdx * 4 + 2];
-        sortedGridValues2[i * 4 + 3] = this.originalGridValues2[srcIdx * 4 + 3];
-      }
+
+    // Apply sorting to SH1 values
+    if (this.originalSH1Values) {
+        sortedSH1Values = new Float32Array(this.instanceCount * 9);
+        for (let i = 0; i < this.instanceCount; i++) {
+            const srcIdx = this.sortedIndices[i];
+            for (let j = 0; j < 9; j++) {
+                sortedSH1Values[i * 9 + j] = this.originalSH1Values[srcIdx * 9 + j];
+            }
+        }
     }
-    
+
+    // Add debug logging before updating buffers
+    console.log('Updating GPU buffers with sorted data:', {
+        hasPositions: sortedPositions.length > 0,
+        hasColors: !!sortedColors,
+        hasScales: !!sortedScales,
+        hasGridValues1: !!sortedGridValues1,
+        hasGridValues2: !!sortedGridValues2,
+        hasSH1Values: !!sortedSH1Values
+    });
+
     // Update GPU buffers
     gl.bindVertexArray(this.vao);
     
@@ -1090,34 +1327,70 @@ export class Viewer {
     
     // Update colors
     if (sortedColors && this.instanceColorBuffer) {
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceColorBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, sortedColors, gl.STATIC_DRAW);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceColorBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, sortedColors, gl.STATIC_DRAW);
     }
     
     // Update scales
     if (sortedScales && this.instanceScaleBuffer) {
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceScaleBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, sortedScales, gl.STATIC_DRAW);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceScaleBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, sortedScales, gl.STATIC_DRAW);
     }
     
     // Update grid values 1
     if (sortedGridValues1 && this.instanceGridValuesBuffer) {
-      console.log('Updating grid values 1:', 
-        sortedGridValues1[0], sortedGridValues1[1], 
-        sortedGridValues1[2], sortedGridValues1[3]);
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceGridValuesBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, sortedGridValues1, gl.STATIC_DRAW);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceGridValuesBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, sortedGridValues1, gl.STATIC_DRAW);
     }
     
     // Update grid values 2
     if (sortedGridValues2 && this.instanceDensityBuffer) {
-      console.log('Updating grid values 2:', 
-        sortedGridValues2[0], sortedGridValues2[1], 
-        sortedGridValues2[2], sortedGridValues2[3]);
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceDensityBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, sortedGridValues2, gl.STATIC_DRAW);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceDensityBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, sortedGridValues2, gl.STATIC_DRAW);
     }
     
+    // Update SH1 values - first 3 coefficients
+    if (sortedSH1Values && this.instanceSH1Buffer) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceSH1Buffer);
+        const sh1_0Values = new Float32Array(this.instanceCount * 3);
+        for (let i = 0; i < this.instanceCount; i++) {
+            sh1_0Values[i * 3 + 0] = sortedSH1Values[i * 9 + 0];
+            sh1_0Values[i * 3 + 1] = sortedSH1Values[i * 9 + 1];
+            sh1_0Values[i * 3 + 2] = sortedSH1Values[i * 9 + 2];
+        }
+        gl.bufferData(gl.ARRAY_BUFFER, sh1_0Values, gl.STATIC_DRAW);
+    }
+    
+    // Update SH1 values - next 3 coefficients
+    if (sortedSH1Values && this.instanceSH1Buffer2) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceSH1Buffer2);
+        const sh1_1Values = new Float32Array(this.instanceCount * 3);
+        for (let i = 0; i < this.instanceCount; i++) {
+            sh1_1Values[i * 3 + 0] = sortedSH1Values[i * 9 + 3];
+            sh1_1Values[i * 3 + 1] = sortedSH1Values[i * 9 + 4];
+            sh1_1Values[i * 3 + 2] = sortedSH1Values[i * 9 + 5];
+        }
+        gl.bufferData(gl.ARRAY_BUFFER, sh1_1Values, gl.STATIC_DRAW);
+    }
+    
+    // Update SH1 values - last 3 coefficients
+    if (sortedSH1Values && this.instanceSH1Buffer3) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceSH1Buffer3);
+        const sh1_2Values = new Float32Array(this.instanceCount * 3);
+        for (let i = 0; i < this.instanceCount; i++) {
+            sh1_2Values[i * 3 + 0] = sortedSH1Values[i * 9 + 6];
+            sh1_2Values[i * 3 + 1] = sortedSH1Values[i * 9 + 7];
+            sh1_2Values[i * 3 + 2] = sortedSH1Values[i * 9 + 8];
+        }
+        gl.bufferData(gl.ARRAY_BUFFER, sh1_2Values, gl.STATIC_DRAW);
+    }
+
+    // Check for GL errors after each buffer update
+    const error = gl.getError();
+    if (error !== gl.NO_ERROR) {
+        console.error('WebGL error during buffer updates:', error);
+    }
+
     gl.bindVertexArray(null);
   }
 
