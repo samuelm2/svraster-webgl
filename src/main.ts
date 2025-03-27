@@ -210,7 +210,7 @@ function addPLYUploadUI(viewer: Viewer, camera: Camera) {
         }
         
         // Load the point cloud with octlevels for scaling
-        viewer.loadPointCloud(plyData.vertices, plyData.colors, plyData.octlevels);
+        viewer.loadPointCloud(plyData.vertices, plyData.colors, plyData.octlevels, undefined, plyData.gridValues);
         
         // Update info display to include octlevel range if available
         let octlevelInfo = '';
