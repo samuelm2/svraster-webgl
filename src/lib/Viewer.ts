@@ -202,7 +202,7 @@ export class Viewer {
         dir.y = -dir.y;
         
         // SH0 is constant term (already in RGB)
-        vec3 color = sh0.rgb;
+        vec3 color = sh0.rgb * 0.28209479177387814;
         
         // Calculate basis functions for SH1 (first order terms only)
         // Y_1,-1 = 0.488603 * y
@@ -219,11 +219,13 @@ export class Viewer {
         sh1_contrib += sh1_2 * basis_z;
         
         color += sh1_contrib;
+        color += 0.5;
         
         // Clamp to valid RGB range
-        return clamp(color, 0.0, 1.0);
+        return max(color, 0.0);
       }
       
+
       void main() {
         // Scale the vertex position by instance scale
         vec4 scaledPosition = vec4(aVertexPosition.xyz * aInstanceScale, aVertexPosition.w);
@@ -390,7 +392,7 @@ export class Viewer {
           float avgDensity = (density1 + density2 + density3) / 3.0;
           
           // Use view space ray length for Beer-Lambert law
-          float alpha = 1.0 - exp(-avgDensity * viewSpaceRayLength * 10.0);
+          float alpha = 1.0 - exp(-avgDensity * viewSpaceRayLength * 5.0);
           
           fragColor = vec4(vColor, alpha);
         } else {
@@ -617,7 +619,8 @@ export class Viewer {
     }
     
     // Clear the canvas with a slightly visible color to see if rendering is happening
-    gl.clearColor(1.0 / 255.0, 121.0 / 255.0, 51.0 / 255.0, 1.0); 
+    // gl.clearColor(1.0 / 255.0, 121.0 / 255.0, 51.0 / 255.0, 1.0); 
+    gl.clearColor(0.0, 0.0, 0.0, 1.0);
     gl.clear(gl.COLOR_BUFFER_BIT);
     
     // Ensure blending is properly set up
