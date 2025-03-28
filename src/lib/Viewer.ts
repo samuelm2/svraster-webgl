@@ -38,7 +38,7 @@ export class Viewer {
   private sortWorker: Worker | null = null;
   private pendingSortRequest: boolean = false;
   private originalPositions: Float32Array | null = null;
-  private originalColors: Float32Array | null = null;
+  private originalSH0Values: Float32Array | null = null;
   private originalScales: Float32Array | null = null;
   private originalGridValues1: Float32Array | null = null;
   private originalGridValues2: Float32Array | null = null;
@@ -73,7 +73,7 @@ export class Viewer {
 
   // Add these properties to the Viewer class
   private positionsTexture: WebGLTexture | null = null;
-  private colorsTexture: WebGLTexture | null = null;
+  private sh0Texture: WebGLTexture | null = null;
   private scalesTexture: WebGLTexture | null = null;
   private gridValues1Texture: WebGLTexture | null = null;
   private gridValues2Texture: WebGLTexture | null = null;
@@ -190,15 +190,14 @@ export class Viewer {
       uniform mat4 uProjectionMatrix;
       uniform mat4 uViewMatrix;
       uniform mat4 uSceneTransformMatrix;
-      uniform bool uUseInstanceColors;
       uniform vec3 uCameraPosition;
       
       // Texture uniforms for attribute data
       uniform sampler2D uPositionsTexture;
-      uniform sampler2D uColorsTexture;
       uniform sampler2D uScalesTexture;
       uniform sampler2D uGridValues1Texture;
       uniform sampler2D uGridValues2Texture;
+      uniform sampler2D uSH0Texture;
       uniform sampler2D uSH1_0Texture;
       uniform sampler2D uSH1_1Texture;
       uniform sampler2D uSH1_2Texture;
@@ -264,7 +263,7 @@ export class Viewer {
         
         // Look up instance data from textures
         vec3 instancePosition = texture(uPositionsTexture, texCoord).xyz;
-        vec4 instanceColor = texture(uColorsTexture, texCoord);
+        vec4 instanceColor = texture(uSH0Texture, texCoord);
         float instanceScale = texture(uScalesTexture, texCoord).x;
         vec4 density0 = texture(uGridValues1Texture, texCoord);
         vec4 density1 = texture(uGridValues2Texture, texCoord);
@@ -683,14 +682,12 @@ export class Viewer {
     const projectionMatrixLocation = gl.getUniformLocation(this.program, 'uProjectionMatrix');
     const viewMatrixLocation = gl.getUniformLocation(this.program, 'uViewMatrix');
     const sceneTransformMatrixLocation = gl.getUniformLocation(this.program, 'uSceneTransformMatrix');
-    const useInstanceColorsLocation = gl.getUniformLocation(this.program, 'uUseInstanceColors');
     const cameraPositionLocation = gl.getUniformLocation(this.program, 'uCameraPosition');
     
     // Pass matrices to shader
     gl.uniformMatrix4fv(projectionMatrixLocation, false, this.camera.getProjectionMatrix());
     gl.uniformMatrix4fv(viewMatrixLocation, false, this.camera.getViewMatrix());
     gl.uniformMatrix4fv(sceneTransformMatrixLocation, false, this.sceneTransformMatrix);
-    gl.uniform1i(useInstanceColorsLocation, 1);
     
     // Pass camera position to the shader
     gl.uniform3f(cameraPositionLocation, cameraPos[0], cameraPos[1], cameraPos[2]);
@@ -707,11 +704,11 @@ export class Viewer {
     gl.bindTexture(gl.TEXTURE_2D, this.positionsTexture);
     gl.uniform1i(positionsTextureLocation, 0);
     
-    // Bind colors texture to unit 1
-    const colorsTextureLocation = gl.getUniformLocation(this.program, 'uColorsTexture');
+    // Bind sh0 texture to unit 1
+    const sh0TextureLocation = gl.getUniformLocation(this.program, 'uSH0Texture');
     gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, this.colorsTexture);
-    gl.uniform1i(colorsTextureLocation, 1);
+    gl.bindTexture(gl.TEXTURE_2D, this.sh0Texture);
+    gl.uniform1i(sh0TextureLocation, 1);
     
     // Bind scales texture to unit 2
     const scalesTextureLocation = gl.getUniformLocation(this.program, 'uScalesTexture');
@@ -786,7 +783,7 @@ export class Viewer {
    */
   public loadPointCloud(
     positions: Float32Array, 
-    colors?: Float32Array,
+    sh0Values?: Float32Array,
     octlevels?: Uint8Array,
     octpaths?: Uint32Array,
     gridValues?: Float32Array,
@@ -798,15 +795,15 @@ export class Viewer {
     this.originalPositions = new Float32Array(positions);
     
     // Save SH0 (base colors)
-    if (colors) {
-      this.originalColors = new Float32Array(colors);
+    if (sh0Values) {
+      this.originalSH0Values = new Float32Array(sh0Values);
     } else {
-      this.originalColors = new Float32Array(positions.length / 3 * 4);
+      this.originalSH0Values = new Float32Array(positions.length / 3 * 4);
       for (let i = 0; i < positions.length / 3; i++) {
-        this.originalColors[i * 4 + 0] = 1.0; // R
-        this.originalColors[i * 4 + 1] = 1.0; // G
-        this.originalColors[i * 4 + 2] = 1.0; // B
-        this.originalColors[i * 4 + 3] = 1.0; // A
+        this.originalSH0Values[i * 4 + 0] = 1.0; // R
+        this.originalSH0Values[i * 4 + 1] = 1.0; // G
+        this.originalSH0Values[i * 4 + 2] = 1.0; // B
+        this.originalSH0Values[i * 4 + 3] = 1.0; // A
       }
     }
     
@@ -941,8 +938,8 @@ export class Viewer {
     // Create textures for all attribute data
     this.positionsTexture = this.createDataTexture(this.originalPositions, 3);
     
-    if (this.originalColors) {
-      this.colorsTexture = this.createDataTexture(this.originalColors, 4);
+    if (this.originalSH0Values) {
+      this.sh0Texture = this.createDataTexture(this.originalSH0Values, 4);
     }
     
     if (this.originalScales) {
@@ -1046,7 +1043,7 @@ export class Viewer {
     if (gl) {
       // Delete textures
       if (this.positionsTexture) gl.deleteTexture(this.positionsTexture);
-      if (this.colorsTexture) gl.deleteTexture(this.colorsTexture);
+      if (this.sh0Texture) gl.deleteTexture(this.sh0Texture);
       if (this.scalesTexture) gl.deleteTexture(this.scalesTexture);
       if (this.gridValues1Texture) gl.deleteTexture(this.gridValues1Texture);
       if (this.gridValues2Texture) gl.deleteTexture(this.gridValues2Texture);
@@ -1070,7 +1067,7 @@ export class Viewer {
     
     // Clear reference data
     this.originalPositions = null;
-    this.originalColors = null;
+    this.originalSH0Values = null;
     this.originalScales = null;
     this.originalGridValues1 = null;
     this.originalGridValues2 = null;
