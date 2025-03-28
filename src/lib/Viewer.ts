@@ -199,6 +199,7 @@ export class Viewer {
       vec3 evaluateSH(vec4 sh0, vec3 sh1_0, vec3 sh1_1, vec3 sh1_2, vec3 direction) {
         // Normalize direction vector
         vec3 dir = normalize(direction);
+        dir.y = -dir.y;
         
         // SH0 is constant term (already in RGB)
         vec3 color = sh0.rgb;
@@ -270,6 +271,7 @@ export class Viewer {
       in vec3 vColor;            // Pre-calculated color from vertex shader
       
       uniform vec3 uCameraPosition;
+      uniform mat4 uViewMatrix;
       
       out vec4 fragColor;
       
@@ -359,17 +361,25 @@ export class Viewer {
           vec3 boxMin = vVoxelCenter - vec3(vScale * 0.5);
           vec3 boxMax = vVoxelCenter + vec3(vScale * 0.5);
           
-          // Get intersection length
-          float rayLength = tFar - tNear;
+          // Calculate entry and exit points in world space
+          vec3 entryPoint = rayOrigin + rayDir * tNear;
+          vec3 exitPoint = rayOrigin + rayDir * tFar;
+          
+          // Transform to view space
+          vec4 entryPointView = uViewMatrix * vec4(entryPoint, 1.0);
+          vec4 exitPointView = uViewMatrix * vec4(exitPoint, 1.0);
+          
+          // Calculate ray length in view space
+          float viewSpaceRayLength = distance(entryPointView.xyz, exitPointView.xyz);
           
           // Get raw interpolated densities
-          vec3 samplePoint1 = rayOrigin + rayDir * (tNear + rayLength * 0.25);
+          vec3 samplePoint1 = rayOrigin + rayDir * (tNear + (tFar - tNear) * 0.25);
           float rawDensity1 = trilinearInterpolation(samplePoint1, boxMin, boxMax, vDensity0, vDensity1);
           
-          vec3 samplePoint2 = rayOrigin + rayDir * (tNear + rayLength * 0.5);
+          vec3 samplePoint2 = rayOrigin + rayDir * (tNear + (tFar - tNear) * 0.5);
           float rawDensity2 = trilinearInterpolation(samplePoint2, boxMin, boxMax, vDensity0, vDensity1);
           
-          vec3 samplePoint3 = rayOrigin + rayDir * (tNear + rayLength * 0.75);
+          vec3 samplePoint3 = rayOrigin + rayDir * (tNear + (tFar - tNear) * 0.75);
           float rawDensity3 = trilinearInterpolation(samplePoint3, boxMin, boxMax, vDensity0, vDensity1);
           
           // Apply explin after interpolation
@@ -378,7 +388,9 @@ export class Viewer {
           float density3 = explin(rawDensity3);
           
           float avgDensity = (density1 + density2 + density3) / 3.0;
-          float alpha = 1.0 - exp(-avgDensity * rayLength);  // Beer-Lambert law
+          
+          // Use view space ray length for Beer-Lambert law
+          float alpha = 1.0 - exp(-avgDensity * viewSpaceRayLength * 10.0);
           
           fragColor = vec4(vColor, alpha);
         } else {
@@ -605,7 +617,7 @@ export class Viewer {
     }
     
     // Clear the canvas with a slightly visible color to see if rendering is happening
-    gl.clearColor(0.0, 0.0, 0.0, 1.0); 
+    gl.clearColor(1.0 / 255.0, 121.0 / 255.0, 51.0 / 255.0, 1.0); 
     gl.clear(gl.COLOR_BUFFER_BIT);
     
     // Ensure blending is properly set up
