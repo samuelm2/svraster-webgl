@@ -373,6 +373,7 @@ export class Viewer {
           
           // Calculate ray length in view space
           float viewSpaceRayLength = distance(entryPointView.xyz, exitPointView.xyz);
+          float stepLength = viewSpaceRayLength / 3.0;
           
           // Get raw interpolated densities
           vec3 samplePoint1 = rayOrigin + rayDir * (tNear + (tFar - tNear) * 0.25);
@@ -384,15 +385,18 @@ export class Viewer {
           vec3 samplePoint3 = rayOrigin + rayDir * (tNear + (tFar - tNear) * 0.75);
           float rawDensity3 = trilinearInterpolation(samplePoint3, boxMin, boxMax, vDensity0, vDensity1);
           
+          
           // Apply explin after interpolation
-          float density1 = explin(rawDensity1);
-          float density2 = explin(rawDensity2);
-          float density3 = explin(rawDensity3);
-          
-          float avgDensity = (density1 + density2 + density3) / 3.0;
-          
+          // I'm not sure why, but the CUDA reference has a 100x scale factor.
+          const float STEP_SCALE = 100.0;
+          float density1 = STEP_SCALE * stepLength * explin(rawDensity1);
+          float density2 = STEP_SCALE * stepLength * explin(rawDensity2);
+          float density3 = STEP_SCALE * stepLength * explin(rawDensity3);
+
+          float totalDensity = density1 + density2 + density3;
+                    
           // Use view space ray length for Beer-Lambert law
-          float alpha = 1.0 - exp(-avgDensity * viewSpaceRayLength * 5.0);
+          float alpha = 1.0 - exp(-totalDensity);
           
           fragColor = vec4(vColor, alpha);
         } else {
