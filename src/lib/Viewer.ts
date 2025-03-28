@@ -9,10 +9,8 @@ export class Viewer {
   private gl: WebGL2RenderingContext | null;
   private program: WebGLProgram | null;
   private positionBuffer: WebGLBuffer | null = null;
-  private colorBuffer: WebGLBuffer | null = null;
   private indexBuffer: WebGLBuffer | null = null;
   private instanceBuffer: WebGLBuffer | null = null;
-  private instanceColorBuffer: WebGLBuffer | null = null;
   private instanceCount: number = 10; // Number of instances to render
   private indexCount: number = 0;     // Number of indices in the cube geometry
   private vao: WebGLVertexArrayObject | null = null;
@@ -31,7 +29,6 @@ export class Viewer {
   // Scene properties for scaling calculation
   private sceneCenter: [number, number, number] = [0, 0, 0];
   private sceneExtent: number = 1.0;
-  private instanceScaleBuffer: WebGLBuffer | null = null;
   private baseVoxelSize: number = 0.01;
   
   private lastCameraPosition: [number, number, number] = [0, 0, 0];
@@ -71,14 +68,24 @@ export class Viewer {
   ]);
   
   // Add these properties to the Viewer class
-  private instanceGridValuesBuffer: WebGLBuffer | null = null; // New buffer for grid density values
-  private instanceGridValuesBuffer2: WebGLBuffer | null = null;
+
+  private originalSH1Values: Float32Array | null = null;
 
   // Add these properties to the Viewer class
-  private instanceSH1Buffer: WebGLBuffer | null = null;
-  private instanceSH1Buffer2: WebGLBuffer | null = null;
-  private instanceSH1Buffer3: WebGLBuffer | null = null;  // Added for 9th value
-  private originalSH1Values: Float32Array | null = null;
+  private positionsTexture: WebGLTexture | null = null;
+  private colorsTexture: WebGLTexture | null = null;
+  private scalesTexture: WebGLTexture | null = null;
+  private gridValues1Texture: WebGLTexture | null = null;
+  private gridValues2Texture: WebGLTexture | null = null;
+  private sh1_0Texture: WebGLTexture | null = null;
+  private sh1_1Texture: WebGLTexture | null = null;
+  private sh1_2Texture: WebGLTexture | null = null;
+
+  private instanceIndexBuffer: WebGLBuffer | null = null;
+  private sortedIndicesArray: Uint32Array | null = null;
+
+  private textureWidth: number = 0;
+  private textureHeight: number = 0;
 
   constructor(containerId: string) {
     // Create canvas element
@@ -104,6 +111,9 @@ export class Viewer {
       throw new Error('WebGL2 not supported in this browser');
     }
     
+    if (!this.gl.getExtension('EXT_color_buffer_float')) {
+      console.error('EXT_color_buffer_float extension not supported');
+    }
     
     // Initialize camera - revert to original positive Z position
     this.camera = new Camera();
@@ -167,33 +177,51 @@ export class Viewer {
   private initShaders(): void {
     const gl = this.gl!;
     
-    // Updated vertex shader to pass density values to fragment shader
+    // Updated vertex shader to use texture fetches
     const vsSource = `#version 300 es
-      precision mediump float;
+      precision highp float;
+      precision highp sampler2D;
       
+      // Core attributes
       in vec4 aVertexPosition;
-      in vec4 aVertexColor;
-      in vec4 aInstanceOffset;
-      in vec4 aInstanceColor;    // SH0 - constant term
-      in vec3 aInstanceSH1_0;    // SH1 coefficients for Red
-      in vec3 aInstanceSH1_1;    // SH1 coefficients for Green
-      in vec3 aInstanceSH1_2;    // SH1 coefficients for Blue
-      in float aInstanceScale;
-      in vec4 aInstanceDensity0; // Density values for 4 corners
-      in vec4 aInstanceDensity1; // Density values for other 4 corners
+      in uint aInstanceIndex;  // Now just the index to look up in textures
       
+      // Uniforms for matrices and camera
       uniform mat4 uProjectionMatrix;
       uniform mat4 uViewMatrix;
       uniform mat4 uSceneTransformMatrix;
       uniform bool uUseInstanceColors;
       uniform vec3 uCameraPosition;
       
+      // Texture uniforms for attribute data
+      uniform sampler2D uPositionsTexture;
+      uniform sampler2D uColorsTexture;
+      uniform sampler2D uScalesTexture;
+      uniform sampler2D uGridValues1Texture;
+      uniform sampler2D uGridValues2Texture;
+      uniform sampler2D uSH1_0Texture;
+      uniform sampler2D uSH1_1Texture;
+      uniform sampler2D uSH1_2Texture;
+      
+      // Texture dimensions
+      uniform int uTextureWidth;
+      uniform int uTextureHeight;
+      
+      // Outputs to fragment shader
       out vec3 vWorldPos;
       out float vScale;
-      out vec3 vVoxelCenter;     // Still needed for density calculations
-      out vec4 vDensity0;        // Pass density values to fragment shader
+      out vec3 vVoxelCenter;     
+      out vec4 vDensity0;        
       out vec4 vDensity1;
-      out vec3 vColor;           // Now pass pre-calculated color
+      out vec3 vColor;           
+      
+      // Helper function to convert index to texture coordinates
+      vec2 indexToTexCoord(int index) {
+        int x = index % uTextureWidth;
+        int y = index / uTextureWidth;
+        return vec2((float(x) + 0.5) / float(uTextureWidth), 
+                   (float(y) + 0.5) / float(uTextureHeight));
+      }
       
       // Spherical Harmonics evaluation with full 9 coefficients (moved from fragment shader)
       vec3 evaluateSH(vec4 sh0, vec3 sh1_0, vec3 sh1_1, vec3 sh1_2, vec3 direction) {
@@ -228,43 +256,61 @@ export class Viewer {
       
 
       void main() {
+        // Get the index for this instance
+        int idx = int(aInstanceIndex);
+        
+        // Convert to texture coordinates
+        vec2 texCoord = indexToTexCoord(idx);
+        
+        // Look up instance data from textures
+        vec3 instancePosition = texture(uPositionsTexture, texCoord).xyz;
+        vec4 instanceColor = texture(uColorsTexture, texCoord);
+        float instanceScale = texture(uScalesTexture, texCoord).x;
+        vec4 density0 = texture(uGridValues1Texture, texCoord);
+        vec4 density1 = texture(uGridValues2Texture, texCoord);
+        vec3 sh1_0 = texture(uSH1_0Texture, texCoord).xyz;
+        vec3 sh1_1 = texture(uSH1_1Texture, texCoord).xyz;
+        vec3 sh1_2 = texture(uSH1_2Texture, texCoord).xyz;
+        
+        // Now continue with the same logic as before
         // Scale the vertex position by instance scale
-        vec4 scaledPosition = vec4(aVertexPosition.xyz * aInstanceScale, aVertexPosition.w);
+        vec4 scaledPosition = vec4(aVertexPosition.xyz * instanceScale, aVertexPosition.w);
         
         // Transform instance offset by scene transform matrix
-        vec4 transformedOffset = uSceneTransformMatrix * vec4(aInstanceOffset.xyz, 1.0);
+        vec4 transformedOffset = uSceneTransformMatrix * vec4(instancePosition, 1.0);
         
         // Position is scaled vertex position + transformed instance offset
-        vec4 instancePosition = scaledPosition + vec4(transformedOffset.xyz, 0.0);
+        vec4 instancePos = scaledPosition + vec4(transformedOffset.xyz, 0.0);
         
         // Calculate final position
-        gl_Position = uProjectionMatrix * uViewMatrix * instancePosition;
+        gl_Position = uProjectionMatrix * uViewMatrix * instancePos;
         
         // Pass world position of the vertex
-        vWorldPos = instancePosition.xyz;
+        vWorldPos = instancePos.xyz;
         
         // Calculate and pass voxel center
         vVoxelCenter = transformedOffset.xyz;
         
         // Pass scale to fragment shader
-        vScale = aInstanceScale;
+        vScale = instanceScale;
         
         // Calculate viewing direction from voxel center to camera
         vec3 viewDir = normalize(vVoxelCenter - uCameraPosition);
         
         // Calculate color using SH and pass to fragment shader
-        vec4 sh0 = uUseInstanceColors ? aInstanceColor : aVertexColor;
-        vColor = evaluateSH(sh0, aInstanceSH1_0, aInstanceSH1_1, aInstanceSH1_2, viewDir);
+        vec4 sh0 = instanceColor;
+        vColor = evaluateSH(sh0, sh1_0, sh1_1, sh1_2, viewDir);
         
         // Pass density values to fragment shader
-        vDensity0 = aInstanceDensity0;
-        vDensity1 = aInstanceDensity1;
+        vDensity0 = density0;
+        vDensity1 = density1;
       }
     `;
     
     // Updated fragment shader with debug output
     const fsSource = `#version 300 es
-      precision mediump float;
+
+      precision highp float;  // Changed from mediump to highp to match vertex shader
       
       in vec3 vWorldPos;
       in float vScale;
@@ -474,40 +520,37 @@ export class Viewer {
     gl.bindVertexArray(this.vao);
     
     // Initialize cube geometry for instancing
-    // Use a smaller cube size by default (better for point clouds)
     this.initCubeGeometry(0.01); 
     
-    // Example: Create a simple grid of instances
-    const instanceOffsets = [];
-    const gridSize = Math.ceil(Math.sqrt(this.instanceCount));
-    const spacing = 2.0; // Space between instances
-    
+    // Create and initialize the instance index buffer (this is all we need now for instancing)
+    const instanceIndices = new Uint32Array(this.instanceCount);
     for (let i = 0; i < this.instanceCount; i++) {
-      const x = (i % gridSize) * spacing - (gridSize * spacing / 2) + spacing / 2;
-      const z = Math.floor(i / gridSize) * spacing - (gridSize * spacing / 2) + spacing / 2;
-      // Position each instance with a different offset
-      instanceOffsets.push(x, 0.0, z, 0.0);
+      instanceIndices[i] = i;
     }
     
-    // Create and fill the instance buffer
-    this.instanceBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(instanceOffsets), gl.STATIC_DRAW);
+    // Create and fill the instance index buffer
+    this.instanceIndexBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceIndexBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, instanceIndices, gl.DYNAMIC_DRAW);
     
-    // Set up instance position attribute
-    const instanceAttributeLocation = gl.getAttribLocation(this.program!, 'aInstanceOffset');
-    gl.enableVertexAttribArray(instanceAttributeLocation);
-    gl.vertexAttribPointer(
-      instanceAttributeLocation,
-      4,          // 4 components per instance offset (x, y, z, w)
-      gl.FLOAT,   // data type
-      false,      // no normalization
-      0,          // stride
-      0           // offset
-    );
+    // Get attribute location for instance index
+    const instanceIndexLocation = gl.getAttribLocation(this.program!, 'aInstanceIndex');
+    console.log('Instance index attribute location:', instanceIndexLocation);
     
-    // Enable instancing for positions
-    gl.vertexAttribDivisor(instanceAttributeLocation, 1);
+    // Only set up instance index attribute if it exists in the shader
+    if (instanceIndexLocation !== -1) {
+      gl.enableVertexAttribArray(instanceIndexLocation);
+      gl.vertexAttribIPointer(
+        instanceIndexLocation,
+        1,               // 1 component per instance index
+        gl.UNSIGNED_INT, // data type
+        0,               // stride
+        0                // offset
+      );
+      gl.vertexAttribDivisor(instanceIndexLocation, 1);
+    } else {
+      console.error('Could not find aInstanceIndex attribute in shader');
+    }
     
     // Unbind the VAO
     gl.bindVertexArray(null);
@@ -519,10 +562,8 @@ export class Viewer {
   private initCubeGeometry(size: number): void {
     const gl = this.gl!;
     
-    // Create a simplified cube with the specified size
+    // Create cube geometry
     const halfSize = size / 2;
-    
-    // Simplify: Just use a cube with 8 vertices and 12 triangles
     const positions = [
       // Front face
       -halfSize, -halfSize,  halfSize,
@@ -542,42 +583,24 @@ export class Viewer {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
     
-    // Set up the position attribute
+    // Get attribute location for vertex position
     const positionAttributeLocation = gl.getAttribLocation(this.program!, 'aVertexPosition');
-    gl.enableVertexAttribArray(positionAttributeLocation);
-    gl.vertexAttribPointer(
-      positionAttributeLocation,
-      3,        // 3 components per vertex
-      gl.FLOAT, // data type
-      false,    // no normalization
-      0,        // stride
-      0         // offset
-    );
     
-    // Simplify: Solid white colors for all vertices
-    const colors = [];
-    for (let i = 0; i < 8; i++) {
-      colors.push(1.0, 1.0, 1.0, 1.0);
+    if (positionAttributeLocation !== -1) {
+      gl.enableVertexAttribArray(positionAttributeLocation);
+      gl.vertexAttribPointer(
+        positionAttributeLocation,
+        3,        // 3 components per vertex
+        gl.FLOAT, // data type
+        false,    // no normalization
+        0,        // stride
+        0         // offset
+      );
+    } else {
+      console.error('Could not find aVertexPosition attribute in shader');
     }
     
-    // Create color buffer
-    this.colorBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.colorBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
-    
-    // Set up the color attribute
-    const colorAttributeLocation = gl.getAttribLocation(this.program!, 'aVertexColor');
-    gl.enableVertexAttribArray(colorAttributeLocation);
-    gl.vertexAttribPointer(
-      colorAttributeLocation,
-      4,        // 4 components per color (RGBA)
-      gl.FLOAT, // data type
-      false,    // no normalization
-      0,        // stride
-      0         // offset
-    );
-    
-    // Simplify: Use just front and back faces for a total of 12 triangles
+    // Indices as before
     const indices = [
       0, 1, 2,    0, 2, 3,    // Front face
       4, 5, 6,    4, 6, 7,    // Back face
@@ -672,6 +695,58 @@ export class Viewer {
     // Pass camera position to the shader
     gl.uniform3f(cameraPositionLocation, cameraPos[0], cameraPos[1], cameraPos[2]);
     
+    // Set texture uniforms
+    const textureWidthLocation = gl.getUniformLocation(this.program, 'uTextureWidth');
+    const textureHeightLocation = gl.getUniformLocation(this.program, 'uTextureHeight');
+    gl.uniform1i(textureWidthLocation, this.textureWidth);
+    gl.uniform1i(textureHeightLocation, this.textureHeight);
+    
+    // Bind position texture to unit 0
+    const positionsTextureLocation = gl.getUniformLocation(this.program, 'uPositionsTexture');
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.positionsTexture);
+    gl.uniform1i(positionsTextureLocation, 0);
+    
+    // Bind colors texture to unit 1
+    const colorsTextureLocation = gl.getUniformLocation(this.program, 'uColorsTexture');
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.colorsTexture);
+    gl.uniform1i(colorsTextureLocation, 1);
+    
+    // Bind scales texture to unit 2
+    const scalesTextureLocation = gl.getUniformLocation(this.program, 'uScalesTexture');
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.scalesTexture);
+    gl.uniform1i(scalesTextureLocation, 2);
+    
+    // Bind grid values texture 1 to unit 3
+    const gridValues1TextureLocation = gl.getUniformLocation(this.program, 'uGridValues1Texture');
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, this.gridValues1Texture);
+    gl.uniform1i(gridValues1TextureLocation, 3);
+    
+    // Bind grid values texture 2 to unit 4
+    const gridValues2TextureLocation = gl.getUniformLocation(this.program, 'uGridValues2Texture');
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, this.gridValues2Texture);
+    gl.uniform1i(gridValues2TextureLocation, 4);
+    
+    // Bind SH1 textures to units 5, 6, 7
+    const sh1_0TextureLocation = gl.getUniformLocation(this.program, 'uSH1_0Texture');
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, this.sh1_0Texture);
+    gl.uniform1i(sh1_0TextureLocation, 5);
+    
+    const sh1_1TextureLocation = gl.getUniformLocation(this.program, 'uSH1_1Texture');
+    gl.activeTexture(gl.TEXTURE6);
+    gl.bindTexture(gl.TEXTURE_2D, this.sh1_1Texture);
+    gl.uniform1i(sh1_1TextureLocation, 6);
+    
+    const sh1_2TextureLocation = gl.getUniformLocation(this.program, 'uSH1_2Texture');
+    gl.activeTexture(gl.TEXTURE7);
+    gl.bindTexture(gl.TEXTURE_2D, this.sh1_2Texture);
+    gl.uniform1i(sh1_2TextureLocation, 7);
+    
     // Draw instanced geometry
     console.log('Drawing with instance count:', this.instanceCount);
     if (this.instanceCount <= 0) {
@@ -719,7 +794,7 @@ export class Viewer {
   ): void {
     console.log(`Loading point cloud with ${positions.length / 3} points`);
     
-    // Save original data for sorting
+    // Save original data (we still need it for the sort worker)
     this.originalPositions = new Float32Array(positions);
     
     // Save SH0 (base colors)
@@ -828,6 +903,15 @@ export class Viewer {
       }
     }
     
+    // Set the instance count
+    this.instanceCount = positions.length / 3;
+    
+    // Initialize initial indices (sequential ordering)
+    this.sortedIndicesArray = new Uint32Array(this.instanceCount);
+    for (let i = 0; i < this.instanceCount; i++) {
+      this.sortedIndicesArray[i] = i;
+    }
+    
     // Initialize WebGL resources
     const gl = this.gl!;
     
@@ -838,214 +922,64 @@ export class Viewer {
     // Initialize cube geometry
     this.initCubeGeometry(1.0);
     
-    // Set up instance positions
-    this.instanceBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+    // Create and upload index buffer
+    this.instanceIndexBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceIndexBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, this.sortedIndicesArray, gl.DYNAMIC_DRAW);
     
-    const instanceAttributeLocation = gl.getAttribLocation(this.program!, 'aInstanceOffset');
-    gl.enableVertexAttribArray(instanceAttributeLocation);
-    gl.vertexAttribPointer(
-      instanceAttributeLocation,
-      3,
-      gl.FLOAT,
-      false,
+    const instanceIndexLocation = gl.getAttribLocation(this.program!, 'aInstanceIndex');
+    gl.enableVertexAttribArray(instanceIndexLocation);
+    gl.vertexAttribIPointer(
+      instanceIndexLocation,
+      1,
+      gl.UNSIGNED_INT,
       0,
       0
     );
-    gl.vertexAttribDivisor(instanceAttributeLocation, 1);
+    gl.vertexAttribDivisor(instanceIndexLocation, 1);
     
-    // Set up instance colors
-    this.instanceColorBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceColorBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, this.originalColors, gl.STATIC_DRAW);
+    // Create textures for all attribute data
+    this.positionsTexture = this.createDataTexture(this.originalPositions, 3);
     
-    const instanceColorLocation = gl.getAttribLocation(this.program!, 'aInstanceColor');
-    gl.enableVertexAttribArray(instanceColorLocation);
-    gl.vertexAttribPointer(
-      instanceColorLocation,
-      4,
-      gl.FLOAT,
-      false,
-      0,
-      0
-    );
-    gl.vertexAttribDivisor(instanceColorLocation, 1);
+    if (this.originalColors) {
+      this.colorsTexture = this.createDataTexture(this.originalColors, 4);
+    }
     
-    // Set the instance count
-    console.log('Setting instance count:', positions.length / 3);
-    this.instanceCount = positions.length / 3;
-    
-    // Set up instance scales
     if (this.originalScales) {
-      this.instanceScaleBuffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceScaleBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, this.originalScales, gl.STATIC_DRAW);
-      
-      const instanceScaleLocation = gl.getAttribLocation(this.program!, 'aInstanceScale');
-      if (instanceScaleLocation !== -1) {
-        gl.enableVertexAttribArray(instanceScaleLocation);
-        gl.vertexAttribPointer(
-          instanceScaleLocation,
-          1,
-          gl.FLOAT,
-          false,
-          0,
-          0
-        );
-        gl.vertexAttribDivisor(instanceScaleLocation, 1);
-      }
-    } else {
-      // Use default scale
-      const scales = new Float32Array(this.instanceCount);
-      for (let i = 0; i < this.instanceCount; i++) {
-        scales[i] = this.baseVoxelSize;
-      }
-      
-      this.instanceScaleBuffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceScaleBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, scales, gl.STATIC_DRAW);
-      
-      const instanceScaleLocation = gl.getAttribLocation(this.program!, 'aInstanceScale');
-      if (instanceScaleLocation !== -1) {
-        gl.enableVertexAttribArray(instanceScaleLocation);
-        gl.vertexAttribPointer(
-          instanceScaleLocation,
-          1,
-          gl.FLOAT,
-          false,
-          0,
-          0
-        );
-        gl.vertexAttribDivisor(instanceScaleLocation, 1);
-      }
+      this.scalesTexture = this.createDataTexture(this.originalScales, 1);
     }
     
-    // Set up density values for the first 4 corners
-    const instanceDensity0Location = gl.getAttribLocation(this.program!, 'aInstanceDensity0');
-    console.log('Density0 attribute location:', instanceDensity0Location);
-    if (instanceDensity0Location !== -1 && this.originalGridValues1) {
-      this.instanceGridValuesBuffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceGridValuesBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, this.originalGridValues1, gl.STATIC_DRAW);
-      
-      gl.enableVertexAttribArray(instanceDensity0Location);
-      gl.vertexAttribPointer(
-        instanceDensity0Location,
-        4,
-        gl.FLOAT,
-        false,
-        0,
-        0
-      );
-      gl.vertexAttribDivisor(instanceDensity0Location, 1);
+    if (this.originalGridValues1) {
+      this.gridValues1Texture = this.createDataTexture(this.originalGridValues1, 4);
     }
     
-    // Set up density values for the other 4 corners
-    const instanceDensity1Location = gl.getAttribLocation(this.program!, 'aInstanceDensity1');
-    console.log('Density1 attribute location:', instanceDensity1Location);
-    if (instanceDensity1Location !== -1 && this.originalGridValues2) {
-      this.instanceGridValuesBuffer2 = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceGridValuesBuffer2);
-      gl.bufferData(gl.ARRAY_BUFFER, this.originalGridValues2, gl.STATIC_DRAW);
-      
-      gl.enableVertexAttribArray(instanceDensity1Location);
-      gl.vertexAttribPointer(
-        instanceDensity1Location,
-        4,
-        gl.FLOAT,
-        false,
-        0,
-        0
-      );
-      gl.vertexAttribDivisor(instanceDensity1Location, 1);
+    if (this.originalGridValues2) {
+      this.gridValues2Texture = this.createDataTexture(this.originalGridValues2, 4);
     }
     
-    // Set up SH1 values - first 3 coefficients
-    const instanceSH1_0Location = gl.getAttribLocation(this.program!, 'aInstanceSH1_0');
-    console.log('SH1_0 attribute location:', instanceSH1_0Location);
-    if (instanceSH1_0Location !== -1 && this.originalSH1Values) {
-      this.instanceSH1Buffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceSH1Buffer);
-      
-      // Create a buffer for the first 3 SH1 values
+    if (this.originalSH1Values) {
+      // Split SH1 values into three textures (each with 3 components)
       const sh1_0Values = new Float32Array(this.instanceCount * 3);
+      const sh1_1Values = new Float32Array(this.instanceCount * 3);
+      const sh1_2Values = new Float32Array(this.instanceCount * 3);
+      
       for (let i = 0; i < this.instanceCount; i++) {
         sh1_0Values[i * 3 + 0] = this.originalSH1Values[i * 9 + 0];
         sh1_0Values[i * 3 + 1] = this.originalSH1Values[i * 9 + 1];
         sh1_0Values[i * 3 + 2] = this.originalSH1Values[i * 9 + 2];
-      }
-      
-      gl.bufferData(gl.ARRAY_BUFFER, sh1_0Values, gl.STATIC_DRAW);
-      
-      gl.enableVertexAttribArray(instanceSH1_0Location);
-      gl.vertexAttribPointer(
-        instanceSH1_0Location,
-        3,        // 3 components
-        gl.FLOAT,
-        false,
-        0,
-        0
-      );
-      gl.vertexAttribDivisor(instanceSH1_0Location, 1);
-    }
-
-    // Set up SH1 values - next 3 coefficients
-    const instanceSH1_1Location = gl.getAttribLocation(this.program!, 'aInstanceSH1_1');
-    console.log('SH1_1 attribute location:', instanceSH1_1Location);
-    if (instanceSH1_1Location !== -1 && this.originalSH1Values) {
-      this.instanceSH1Buffer2 = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceSH1Buffer2);
-      
-      // Create a buffer for the next 3 SH1 values
-      const sh1_1Values = new Float32Array(this.instanceCount * 3);
-      for (let i = 0; i < this.instanceCount; i++) {
+        
         sh1_1Values[i * 3 + 0] = this.originalSH1Values[i * 9 + 3];
         sh1_1Values[i * 3 + 1] = this.originalSH1Values[i * 9 + 4];
         sh1_1Values[i * 3 + 2] = this.originalSH1Values[i * 9 + 5];
-      }
-      
-      gl.bufferData(gl.ARRAY_BUFFER, sh1_1Values, gl.STATIC_DRAW);
-      
-      gl.enableVertexAttribArray(instanceSH1_1Location);
-      gl.vertexAttribPointer(
-        instanceSH1_1Location,
-        3,        // 3 components
-        gl.FLOAT,
-        false,
-        0,
-        0
-      );
-      gl.vertexAttribDivisor(instanceSH1_1Location, 1);
-    }
-    
-    // Set up SH1 values - last 3 coefficients
-    const instanceSH1_2Location = gl.getAttribLocation(this.program!, 'aInstanceSH1_2');
-    console.log('SH1_2 attribute location:', instanceSH1_2Location);
-    if (instanceSH1_2Location !== -1 && this.originalSH1Values) {
-      this.instanceSH1Buffer3 = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceSH1Buffer3);
-      
-      // Create a buffer for the last 3 SH1 values
-      const sh1_2Values = new Float32Array(this.instanceCount * 3);
-      for (let i = 0; i < this.instanceCount; i++) {
+        
         sh1_2Values[i * 3 + 0] = this.originalSH1Values[i * 9 + 6];
         sh1_2Values[i * 3 + 1] = this.originalSH1Values[i * 9 + 7];
         sh1_2Values[i * 3 + 2] = this.originalSH1Values[i * 9 + 8];
       }
       
-      gl.bufferData(gl.ARRAY_BUFFER, sh1_2Values, gl.STATIC_DRAW);
-      
-      gl.enableVertexAttribArray(instanceSH1_2Location);
-      gl.vertexAttribPointer(
-        instanceSH1_2Location,
-        3,        // 3 components
-        gl.FLOAT,
-        false,
-        0,
-        0
-      );
-      gl.vertexAttribDivisor(instanceSH1_2Location, 1);
+      this.sh1_0Texture = this.createDataTexture(sh1_0Values, 3);
+      this.sh1_1Texture = this.createDataTexture(sh1_1Values, 3);
+      this.sh1_2Texture = this.createDataTexture(sh1_2Values, 3);
     }
     
     // Unbind the VAO
@@ -1110,24 +1044,28 @@ export class Viewer {
     // Clean up WebGL resources
     const gl = this.gl;
     if (gl) {
+      // Delete textures
+      if (this.positionsTexture) gl.deleteTexture(this.positionsTexture);
+      if (this.colorsTexture) gl.deleteTexture(this.colorsTexture);
+      if (this.scalesTexture) gl.deleteTexture(this.scalesTexture);
+      if (this.gridValues1Texture) gl.deleteTexture(this.gridValues1Texture);
+      if (this.gridValues2Texture) gl.deleteTexture(this.gridValues2Texture);
+      if (this.sh1_0Texture) gl.deleteTexture(this.sh1_0Texture);
+      if (this.sh1_1Texture) gl.deleteTexture(this.sh1_1Texture);
+      if (this.sh1_2Texture) gl.deleteTexture(this.sh1_2Texture);
+      
       // Delete buffers
       if (this.positionBuffer) gl.deleteBuffer(this.positionBuffer);
-      if (this.colorBuffer) gl.deleteBuffer(this.colorBuffer);
       if (this.indexBuffer) gl.deleteBuffer(this.indexBuffer);
       if (this.instanceBuffer) gl.deleteBuffer(this.instanceBuffer);
-      if (this.instanceColorBuffer) gl.deleteBuffer(this.instanceColorBuffer);
-      if (this.instanceScaleBuffer) gl.deleteBuffer(this.instanceScaleBuffer);
-      if (this.instanceGridValuesBuffer) gl.deleteBuffer(this.instanceGridValuesBuffer);
+
+      if (this.instanceIndexBuffer) gl.deleteBuffer(this.instanceIndexBuffer);
       
       // Delete VAO
       if (this.vao) gl.deleteVertexArray(this.vao);
       
       // Delete program and shaders
       if (this.program) gl.deleteProgram(this.program);
-      
-      if (this.instanceSH1Buffer) gl.deleteBuffer(this.instanceSH1Buffer);
-      if (this.instanceSH1Buffer2) gl.deleteBuffer(this.instanceSH1Buffer2);
-      if (this.instanceSH1Buffer3) gl.deleteBuffer(this.instanceSH1Buffer3);
     }
     
     // Clear reference data
@@ -1213,178 +1151,28 @@ export class Viewer {
    * Apply sorted indices to reorder instance data
    */
   private applySortedOrder(): void {
-    if (!this.sortedIndices || this.sortedIndices.length === 0 || !this.originalPositions) {
-        console.warn('Missing data for sorting:', {
-            hasIndices: !!this.sortedIndices,
-            indicesLength: this.sortedIndices?.length,
-            hasPositions: !!this.originalPositions
-        });
-        return;
+    if (!this.sortedIndices || this.sortedIndices.length === 0) {
+      console.warn('Missing indices for sorting');
+      return;
     }
     
-    console.log('Applying sort order:', {
-        instanceCount: this.instanceCount,
-        indicesLength: this.sortedIndices.length,
-        firstFewIndices: Array.from(this.sortedIndices.slice(0, 5))
-    });
+    console.log('Applying sort order with indices');
 
     const gl = this.gl!;
     
-    // Create sorted arrays
-    const sortedPositions = new Float32Array(this.instanceCount * 3);
-    let sortedColors: Float32Array | null = null;
-    let sortedScales: Float32Array | null = null;
-    let sortedGridValues1: Float32Array | null = null;
-    let sortedGridValues2: Float32Array | null = null;
-    let sortedSH1Values: Float32Array | null = null;
+    // Simply update the index buffer with the new sorted indices
+    this.sortedIndicesArray = new Uint32Array(this.sortedIndices);
     
-    // Apply sorting to positions
-    for (let i = 0; i < this.instanceCount; i++) {
-        const srcIdx = this.sortedIndices[i];
-        sortedPositions[i * 3 + 0] = this.originalPositions[srcIdx * 3 + 0];
-        sortedPositions[i * 3 + 1] = this.originalPositions[srcIdx * 3 + 1];
-        sortedPositions[i * 3 + 2] = this.originalPositions[srcIdx * 3 + 2];
-    }
-    
-    // Apply sorting to colors
-    if (this.originalColors) {
-        sortedColors = new Float32Array(this.instanceCount * 4);
-        for (let i = 0; i < this.instanceCount; i++) {
-            const srcIdx = this.sortedIndices[i];
-            sortedColors[i * 4 + 0] = this.originalColors[srcIdx * 4 + 0];
-            sortedColors[i * 4 + 1] = this.originalColors[srcIdx * 4 + 1];
-            sortedColors[i * 4 + 2] = this.originalColors[srcIdx * 4 + 2];
-            sortedColors[i * 4 + 3] = this.originalColors[srcIdx * 4 + 3];
-        }
-    }
-    
-    // Apply sorting to scales
-    if (this.originalScales) {
-        sortedScales = new Float32Array(this.instanceCount);
-        for (let i = 0; i < this.instanceCount; i++) {
-            const srcIdx = this.sortedIndices[i];
-            sortedScales[i] = this.originalScales[srcIdx];
-        }
-    }
-    
-    // Apply sorting to grid values
-    if (this.originalGridValues1) {
-        sortedGridValues1 = new Float32Array(this.instanceCount * 4);
-        for (let i = 0; i < this.instanceCount; i++) {
-            const srcIdx = this.sortedIndices[i];
-            sortedGridValues1[i * 4 + 0] = this.originalGridValues1[srcIdx * 4 + 0];
-            sortedGridValues1[i * 4 + 1] = this.originalGridValues1[srcIdx * 4 + 1];
-            sortedGridValues1[i * 4 + 2] = this.originalGridValues1[srcIdx * 4 + 2];
-            sortedGridValues1[i * 4 + 3] = this.originalGridValues1[srcIdx * 4 + 3];
-        }
-    }
-    
-    if (this.originalGridValues2) {
-        sortedGridValues2 = new Float32Array(this.instanceCount * 4);
-        for (let i = 0; i < this.instanceCount; i++) {
-            const srcIdx = this.sortedIndices[i];
-            sortedGridValues2[i * 4 + 0] = this.originalGridValues2[srcIdx * 4 + 0];
-            sortedGridValues2[i * 4 + 1] = this.originalGridValues2[srcIdx * 4 + 1];
-            sortedGridValues2[i * 4 + 2] = this.originalGridValues2[srcIdx * 4 + 2];
-            sortedGridValues2[i * 4 + 3] = this.originalGridValues2[srcIdx * 4 + 3];
-        }
-    }
-
-    // Apply sorting to SH1 values
-    if (this.originalSH1Values) {
-        sortedSH1Values = new Float32Array(this.instanceCount * 9);
-        for (let i = 0; i < this.instanceCount; i++) {
-            const srcIdx = this.sortedIndices[i];
-            for (let j = 0; j < 9; j++) {
-                sortedSH1Values[i * 9 + j] = this.originalSH1Values[srcIdx * 9 + j];
-            }
-        }
-    }
-
-    // Add debug logging before updating buffers
-    console.log('Updating GPU buffers with sorted data:', {
-        hasPositions: sortedPositions.length > 0,
-        hasColors: !!sortedColors,
-        hasScales: !!sortedScales,
-        hasGridValues1: !!sortedGridValues1,
-        hasGridValues2: !!sortedGridValues2,
-        hasSH1Values: !!sortedSH1Values
-    });
-
-    // Update GPU buffers
     gl.bindVertexArray(this.vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceIndexBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, this.sortedIndicesArray, gl.DYNAMIC_DRAW);
+    gl.bindVertexArray(null);
     
-    // Update positions
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, sortedPositions, gl.STATIC_DRAW);
-    
-    // Update colors
-    if (sortedColors && this.instanceColorBuffer) {
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceColorBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, sortedColors, gl.STATIC_DRAW);
-    }
-    
-    // Update scales
-    if (sortedScales && this.instanceScaleBuffer) {
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceScaleBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, sortedScales, gl.STATIC_DRAW);
-    }
-    
-    // Update grid values 1
-    if (sortedGridValues1 && this.instanceGridValuesBuffer) {
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceGridValuesBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, sortedGridValues1, gl.STATIC_DRAW);
-    }
-    
-    // Update grid values 2
-    if (sortedGridValues2 && this.instanceGridValuesBuffer2) {
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceGridValuesBuffer2);
-        gl.bufferData(gl.ARRAY_BUFFER, sortedGridValues2, gl.STATIC_DRAW);
-    }
-    
-    // Update SH1 values - first 3 coefficients
-    if (sortedSH1Values && this.instanceSH1Buffer) {
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceSH1Buffer);
-        const sh1_0Values = new Float32Array(this.instanceCount * 3);
-        for (let i = 0; i < this.instanceCount; i++) {
-            sh1_0Values[i * 3 + 0] = sortedSH1Values[i * 9 + 0];
-            sh1_0Values[i * 3 + 1] = sortedSH1Values[i * 9 + 1];
-            sh1_0Values[i * 3 + 2] = sortedSH1Values[i * 9 + 2];
-        }
-        gl.bufferData(gl.ARRAY_BUFFER, sh1_0Values, gl.STATIC_DRAW);
-    }
-    
-    // Update SH1 values - next 3 coefficients
-    if (sortedSH1Values && this.instanceSH1Buffer2) {
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceSH1Buffer2);
-        const sh1_1Values = new Float32Array(this.instanceCount * 3);
-        for (let i = 0; i < this.instanceCount; i++) {
-            sh1_1Values[i * 3 + 0] = sortedSH1Values[i * 9 + 3];
-            sh1_1Values[i * 3 + 1] = sortedSH1Values[i * 9 + 4];
-            sh1_1Values[i * 3 + 2] = sortedSH1Values[i * 9 + 5];
-        }
-        gl.bufferData(gl.ARRAY_BUFFER, sh1_1Values, gl.STATIC_DRAW);
-    }
-    
-    // Update SH1 values - last 3 coefficients
-    if (sortedSH1Values && this.instanceSH1Buffer3) {
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceSH1Buffer3);
-        const sh1_2Values = new Float32Array(this.instanceCount * 3);
-        for (let i = 0; i < this.instanceCount; i++) {
-            sh1_2Values[i * 3 + 0] = sortedSH1Values[i * 9 + 6];
-            sh1_2Values[i * 3 + 1] = sortedSH1Values[i * 9 + 7];
-            sh1_2Values[i * 3 + 2] = sortedSH1Values[i * 9 + 8];
-        }
-        gl.bufferData(gl.ARRAY_BUFFER, sh1_2Values, gl.STATIC_DRAW);
-    }
-
-    // Check for GL errors after each buffer update
+    // Check for GL errors
     const error = gl.getError();
     if (error !== gl.NO_ERROR) {
-        console.error('WebGL error during buffer updates:', error);
+      console.error('WebGL error during index buffer update:', error);
     }
-
-    gl.bindVertexArray(null);
   }
 
   /**
@@ -1630,5 +1418,77 @@ export class Viewer {
       target[1] + dirY * ratio,
       target[2] + dirZ * ratio
     );
+  }
+
+  /**
+   * Creates a texture from float data
+   */
+  private createDataTexture(data: Float32Array, componentsPerElement: number): WebGLTexture | null {
+    const gl = this.gl!;
+    
+    // Calculate texture dimensions
+    // Need to determine size that fits all elements
+    const numElements = data.length / componentsPerElement;
+    this.textureWidth = Math.min(4096, Math.ceil(Math.sqrt(numElements)));
+    this.textureHeight = Math.ceil(numElements / this.textureWidth);
+    
+    console.log(`Creating texture with dimensions ${this.textureWidth}x${this.textureHeight} for ${numElements} elements`);
+    
+    // Create texture
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    
+    // Create temporary array with correct size for the texture
+    // (needs to be width * height * components in size)
+    const fullSize = this.textureWidth * this.textureHeight * componentsPerElement;
+    const textureData = new Float32Array(fullSize);
+    
+    // Fill with data (leaving any extra space as zeros)
+    textureData.set(data);
+    
+    // Determine internal format and format based on components
+    let internalFormat, format;
+    switch (componentsPerElement) {
+      case 1:
+        internalFormat = gl.R32F;
+        format = gl.RED;
+        break;
+      case 2:
+        internalFormat = gl.RG32F;
+        format = gl.RG;
+        break;
+      case 3:
+        internalFormat = gl.RGB32F;
+        format = gl.RGB;
+        break;
+      case 4:
+        internalFormat = gl.RGBA32F;
+        format = gl.RGBA;
+        break;
+      default:
+        console.error(`Unsupported number of components: ${componentsPerElement}`);
+        return null;
+    }
+    
+    // Upload data to texture
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      internalFormat,
+      this.textureWidth,
+      this.textureHeight,
+      0,
+      format,
+      gl.FLOAT,
+      textureData
+    );
+    
+    // Set texture parameters
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    
+    return texture;
   }
 }
