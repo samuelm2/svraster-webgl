@@ -201,7 +201,7 @@ export class Viewer {
         vec3 dir = normalize(direction);
         dir.y = -dir.y;
         
-        // SH0 is constant term (already in RGB)
+        // SH0
         vec3 color = sh0.rgb * 0.28209479177387814;
         
         // Calculate basis functions for SH1 (first order terms only)
@@ -249,7 +249,7 @@ export class Viewer {
         vScale = aInstanceScale;
         
         // Calculate viewing direction from voxel center to camera
-        vec3 viewDir = normalize(uCameraPosition - vVoxelCenter);
+        vec3 viewDir = normalize(vVoxelCenter - uCameraPosition);
         
         // Calculate color using SH and pass to fragment shader
         vec4 sh0 = uUseInstanceColors ? aInstanceColor : aVertexColor;
@@ -398,7 +398,9 @@ export class Viewer {
           // Use view space ray length for Beer-Lambert law
           float alpha = 1.0 - exp(-totalDensity);
           
-          fragColor = vec4(vColor, alpha);
+          // Premultiply the color by alpha
+          vec3 premultipliedColor = vColor * alpha;
+          fragColor = vec4(premultipliedColor, alpha);
         } else {
           discard;
         }
@@ -630,7 +632,7 @@ export class Viewer {
     // Ensure blending is properly set up
     gl.disable(gl.DEPTH_TEST);
     gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 
 
     // Use our shader program
