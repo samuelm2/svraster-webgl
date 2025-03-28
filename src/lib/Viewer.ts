@@ -33,11 +33,10 @@ export class Viewer {
   private sceneExtent: number = 1.0;
   private instanceScaleBuffer: WebGLBuffer | null = null;
   private baseVoxelSize: number = 0.01;
-  private instanceGridValuesBuffer: WebGLBuffer | null = null; // New buffer for grid density values
-
+  
   private lastCameraPosition: [number, number, number] = [0, 0, 0];
   private resortThreshold: number = 0.1; // Threshold for camera movement to trigger resort
-
+  
   // Add these properties to the Viewer class definition at the top
   private sortWorker: Worker | null = null;
   private pendingSortRequest: boolean = false;
@@ -47,13 +46,13 @@ export class Viewer {
   private originalGridValues1: Float32Array | null = null;
   private originalGridValues2: Float32Array | null = null;
   private sortedIndices: Uint32Array | null = null;
-
+  
   // Add these properties to store the original octree data
   private originalOctlevels: Uint8Array | null = null;
   private originalOctpaths: Uint32Array | null = null;
-
+  
   // Add a flag for this debug feature
-
+  
   // Add these properties to the Viewer class definition at the top
   private isDragging: boolean = false;
   private isPanning: boolean = false;
@@ -62,7 +61,7 @@ export class Viewer {
   private orbitSpeed: number = 0.005;
   private panSpeed: number = 0.01;
   private zoomSpeed: number = 0.1;
-
+  
   // Add this property to the Viewer class
   private sceneTransformMatrix: Float32Array = new Float32Array([
     1, 0, 0, 0,   // First row
@@ -70,9 +69,10 @@ export class Viewer {
     0, 0, 1, 0,   // Third row
     0, 0, 0, 1    // Fourth row
   ]);
-
+  
   // Add these properties to the Viewer class
-  private instanceDensityBuffer: WebGLBuffer | null = null;
+  private instanceGridValuesBuffer: WebGLBuffer | null = null; // New buffer for grid density values
+  private instanceGridValuesBuffer2: WebGLBuffer | null = null;
 
   // Add these properties to the Viewer class
   private instanceSH1Buffer: WebGLBuffer | null = null;
@@ -199,6 +199,8 @@ export class Viewer {
       vec3 evaluateSH(vec4 sh0, vec3 sh1_0, vec3 sh1_1, vec3 sh1_2, vec3 direction) {
         // Normalize direction vector
         vec3 dir = normalize(direction);
+
+        // TODO: Remove this once we have a proper coordinate system
         dir.y = -dir.y;
         
         // SH0
@@ -221,7 +223,6 @@ export class Viewer {
         color += sh1_contrib;
         color += 0.5;
         
-        // Clamp to valid RGB range
         return max(color, 0.0);
       }
       
@@ -944,8 +945,8 @@ export class Viewer {
     const instanceDensity1Location = gl.getAttribLocation(this.program!, 'aInstanceDensity1');
     console.log('Density1 attribute location:', instanceDensity1Location);
     if (instanceDensity1Location !== -1 && this.originalGridValues2) {
-      this.instanceDensityBuffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceDensityBuffer);
+      this.instanceGridValuesBuffer2 = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceGridValuesBuffer2);
       gl.bufferData(gl.ARRAY_BUFFER, this.originalGridValues2, gl.STATIC_DRAW);
       
       gl.enableVertexAttribArray(instanceDensity1Location);
@@ -1336,8 +1337,8 @@ export class Viewer {
     }
     
     // Update grid values 2
-    if (sortedGridValues2 && this.instanceDensityBuffer) {
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceDensityBuffer);
+    if (sortedGridValues2 && this.instanceGridValuesBuffer2) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceGridValuesBuffer2);
         gl.bufferData(gl.ARRAY_BUFFER, sortedGridValues2, gl.STATIC_DRAW);
     }
     
