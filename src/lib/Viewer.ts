@@ -4,6 +4,13 @@
  */
 import { Camera } from './Camera';
 
+enum TextureType {
+  MainAttributes,
+  GridValues,
+  ShCoefficients
+}
+
+
 export class Viewer {
   private canvas: HTMLCanvasElement;
   private gl: WebGL2RenderingContext | null;
@@ -87,6 +94,21 @@ export class Viewer {
   private textureWidth: number = 0;
   private textureHeight: number = 0;
 
+  // Update class properties
+  private posScaleTexture: WebGLTexture | null = null;      // pos + scale (4 values)
+  private gridValuesTexture: WebGLTexture | null = null;    // grid values (8 values)
+  private shTexture: WebGLTexture | null = null;            // sh0 + sh1 (4+8 = 12 values)
+
+  // Add these properties to the class
+  private posScaleWidth: number = 0;
+  private posScaleHeight: number = 0;
+  private gridValuesWidth: number = 0;
+  private gridValuesHeight: number = 0;
+  private shWidth: number = 0;
+  private shHeight: number = 0;
+
+  // Then modify the createDataTexture function to use an enum for texture types
+
   constructor(containerId: string) {
     // Create canvas element
     this.canvas = document.createElement('canvas');
@@ -117,7 +139,7 @@ export class Viewer {
     
     // Initialize camera - revert to original positive Z position
     this.camera = new Camera();
-    this.camera.setPosition(0, 0, 15); // Back to positive Z
+    this.camera.setPosition(0, 0, 1); // Back to positive Z
     this.camera.setTarget(0, 0, 0);    // Still look at origin
     
     // Fix: Initialize last camera position using explicit array
@@ -184,27 +206,23 @@ export class Viewer {
       
       // Core attributes
       in vec4 aVertexPosition;
-      in uint aInstanceIndex;  // Now just the index to look up in textures
+      in uint aInstanceIndex;
       
       // Uniforms for matrices and camera
       uniform mat4 uProjectionMatrix;
       uniform mat4 uViewMatrix;
       uniform mat4 uSceneTransformMatrix;
       uniform vec3 uCameraPosition;
-      
-      // Texture uniforms for attribute data
-      uniform sampler2D uPositionsTexture;
-      uniform sampler2D uScalesTexture;
-      uniform sampler2D uGridValues1Texture;
-      uniform sampler2D uGridValues2Texture;
-      uniform sampler2D uSH0Texture;
-      uniform sampler2D uSH1_0Texture;
-      uniform sampler2D uSH1_1Texture;
-      uniform sampler2D uSH1_2Texture;
-      
+
+      // Uniforms for textures
+      uniform sampler2D uPosScaleTexture;
+      uniform sampler2D uGridValuesTexture;
+      uniform sampler2D uShTexture;
+
       // Texture dimensions
-      uniform int uTextureWidth;
-      uniform int uTextureHeight;
+      uniform ivec2 uPosScaleDims;
+      uniform ivec2 uGridValuesDims;
+      uniform ivec2 uShDims;
       
       // Outputs to fragment shader
       out vec3 vWorldPos;
@@ -214,14 +232,20 @@ export class Viewer {
       out vec4 vDensity1;
       out vec3 vColor;           
       
-      // Helper function to convert index to texture coordinates
-      vec2 indexToTexCoord(int index) {
-        int x = index % uTextureWidth;
-        int y = index / uTextureWidth;
-        return vec2((float(x) + 0.5) / float(uTextureWidth), 
-                   (float(y) + 0.5) / float(uTextureHeight));
+      // Helper function to calculate texture coordinate
+      vec2 getTexCoord(int instanceIdx, int offsetIdx, ivec2 dims, int vec4sPerInstance) {
+        int texelIdx = instanceIdx * vec4sPerInstance + offsetIdx;
+        int x = texelIdx % dims.x;
+        int y = texelIdx / dims.x;
+        return (vec2(x, y) + 0.5) / vec2(dims);
       }
-      
+
+      // Helper functions to fetch data
+      vec4 fetch4(sampler2D tex, int idx, int offsetIdx, ivec2 dims, int vec4sPerInstance) {
+        vec2 coord = getTexCoord(idx, offsetIdx, dims, vec4sPerInstance);
+        return texture(tex, coord);
+      }
+
       // Spherical Harmonics evaluation with full 9 coefficients (moved from fragment shader)
       vec3 evaluateSH(vec4 sh0, vec3 sh1_0, vec3 sh1_1, vec3 sh1_2, vec3 direction) {
         // Normalize direction vector
@@ -250,6 +274,7 @@ export class Viewer {
         color += sh1_contrib;
         color += 0.5;
         
+        
         return max(color, 0.0);
       }
       
@@ -258,20 +283,25 @@ export class Viewer {
         // Get the index for this instance
         int idx = int(aInstanceIndex);
         
-        // Convert to texture coordinates
-        vec2 texCoord = indexToTexCoord(idx);
+        // Fetch position and scale (1 vec4 per instance)
+        vec4 posAndScale = fetch4(uPosScaleTexture, idx, 0, uPosScaleDims, 1);
+        vec3 instancePosition = posAndScale.xyz;
+        float instanceScale = posAndScale.w;
         
-        // Look up instance data from textures
-        vec3 instancePosition = texture(uPositionsTexture, texCoord).xyz;
-        vec4 instanceColor = texture(uSH0Texture, texCoord);
-        float instanceScale = texture(uScalesTexture, texCoord).x;
-        vec4 density0 = texture(uGridValues1Texture, texCoord);
-        vec4 density1 = texture(uGridValues2Texture, texCoord);
-        vec3 sh1_0 = texture(uSH1_0Texture, texCoord).xyz;
-        vec3 sh1_1 = texture(uSH1_1Texture, texCoord).xyz;
-        vec3 sh1_2 = texture(uSH1_2Texture, texCoord).xyz;
+        // Fetch grid values (2 vec4s per instance)
+        vec4 gridValues1 = fetch4(uGridValuesTexture, idx, 0, uGridValuesDims, 2);
+        vec4 gridValues2 = fetch4(uGridValuesTexture, idx, 1, uGridValuesDims, 2);
         
-        // Now continue with the same logic as before
+        // Fetch SH values (3 vec4s per instance)
+        vec4 sh0 = fetch4(uShTexture, idx, 0, uShDims, 3);
+        vec4 sh1_part1 = fetch4(uShTexture, idx, 1, uShDims, 3);
+        vec4 sh1_part2 = fetch4(uShTexture, idx, 2, uShDims, 3);
+        
+        // Extract SH1 coefficients
+        vec3 sh1_0 = sh1_part1.xyz;
+        vec3 sh1_1 = vec3(sh1_part1.w, sh1_part2.xy);
+        vec3 sh1_2 = vec3(sh1_part2.zw, 0.0); // Fix syntax error and only use 8/9 SH values
+    
         // Scale the vertex position by instance scale
         vec4 scaledPosition = vec4(aVertexPosition.xyz * instanceScale, aVertexPosition.w);
         
@@ -297,12 +327,11 @@ export class Viewer {
         vec3 viewDir = normalize(vVoxelCenter - uCameraPosition);
         
         // Calculate color using SH and pass to fragment shader
-        vec4 sh0 = instanceColor;
         vColor = evaluateSH(sh0, sh1_0, sh1_1, sh1_2, viewDir);
         
         // Pass density values to fragment shader
-        vDensity0 = density0;
-        vDensity1 = density1;
+        vDensity0 = gridValues1;
+        vDensity1 = gridValues2;
       }
     `;
     
@@ -698,51 +727,24 @@ export class Viewer {
     gl.uniform1i(textureWidthLocation, this.textureWidth);
     gl.uniform1i(textureHeightLocation, this.textureHeight);
     
-    // Bind position texture to unit 0
-    const positionsTextureLocation = gl.getUniformLocation(this.program, 'uPositionsTexture');
+    // Bind textures and set uniforms
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.positionsTexture);
-    gl.uniform1i(positionsTextureLocation, 0);
-    
-    // Bind sh0 texture to unit 1
-    const sh0TextureLocation = gl.getUniformLocation(this.program, 'uSH0Texture');
+    gl.bindTexture(gl.TEXTURE_2D, this.posScaleTexture);
+    gl.uniform1i(gl.getUniformLocation(this.program!, 'uPosScaleTexture'), 0);
+    gl.uniform2i(gl.getUniformLocation(this.program!, 'uPosScaleDims'), 
+      this.posScaleWidth, this.posScaleHeight);
+
     gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, this.sh0Texture);
-    gl.uniform1i(sh0TextureLocation, 1);
-    
-    // Bind scales texture to unit 2
-    const scalesTextureLocation = gl.getUniformLocation(this.program, 'uScalesTexture');
+    gl.bindTexture(gl.TEXTURE_2D, this.gridValuesTexture);
+    gl.uniform1i(gl.getUniformLocation(this.program!, 'uGridValuesTexture'), 1);
+    gl.uniform2i(gl.getUniformLocation(this.program!, 'uGridValuesDims'), 
+      this.gridValuesWidth, this.gridValuesHeight);
+
     gl.activeTexture(gl.TEXTURE2);
-    gl.bindTexture(gl.TEXTURE_2D, this.scalesTexture);
-    gl.uniform1i(scalesTextureLocation, 2);
-    
-    // Bind grid values texture 1 to unit 3
-    const gridValues1TextureLocation = gl.getUniformLocation(this.program, 'uGridValues1Texture');
-    gl.activeTexture(gl.TEXTURE3);
-    gl.bindTexture(gl.TEXTURE_2D, this.gridValues1Texture);
-    gl.uniform1i(gridValues1TextureLocation, 3);
-    
-    // Bind grid values texture 2 to unit 4
-    const gridValues2TextureLocation = gl.getUniformLocation(this.program, 'uGridValues2Texture');
-    gl.activeTexture(gl.TEXTURE4);
-    gl.bindTexture(gl.TEXTURE_2D, this.gridValues2Texture);
-    gl.uniform1i(gridValues2TextureLocation, 4);
-    
-    // Bind SH1 textures to units 5, 6, 7
-    const sh1_0TextureLocation = gl.getUniformLocation(this.program, 'uSH1_0Texture');
-    gl.activeTexture(gl.TEXTURE5);
-    gl.bindTexture(gl.TEXTURE_2D, this.sh1_0Texture);
-    gl.uniform1i(sh1_0TextureLocation, 5);
-    
-    const sh1_1TextureLocation = gl.getUniformLocation(this.program, 'uSH1_1Texture');
-    gl.activeTexture(gl.TEXTURE6);
-    gl.bindTexture(gl.TEXTURE_2D, this.sh1_1Texture);
-    gl.uniform1i(sh1_1TextureLocation, 6);
-    
-    const sh1_2TextureLocation = gl.getUniformLocation(this.program, 'uSH1_2Texture');
-    gl.activeTexture(gl.TEXTURE7);
-    gl.bindTexture(gl.TEXTURE_2D, this.sh1_2Texture);
-    gl.uniform1i(sh1_2TextureLocation, 7);
+    gl.bindTexture(gl.TEXTURE_2D, this.shTexture);
+    gl.uniform1i(gl.getUniformLocation(this.program!, 'uShTexture'), 2);
+    gl.uniform2i(gl.getUniformLocation(this.program!, 'uShDims'), 
+      this.shWidth, this.shHeight);
     
     // Draw instanced geometry
     console.log('Drawing with instance count:', this.instanceCount);
@@ -787,7 +789,7 @@ export class Viewer {
     octlevels?: Uint8Array,
     octpaths?: Uint32Array,
     gridValues?: Float32Array,
-    restValues?: Float32Array  // Contains SH coefficients beyond SH0
+    restValues?: Float32Array
   ): void {
     console.log(`Loading point cloud with ${positions.length / 3} points`);
     
@@ -935,49 +937,8 @@ export class Viewer {
     );
     gl.vertexAttribDivisor(instanceIndexLocation, 1);
     
-    // Create textures for all attribute data
-    this.positionsTexture = this.createDataTexture(this.originalPositions, 3);
-    
-    if (this.originalSH0Values) {
-      this.sh0Texture = this.createDataTexture(this.originalSH0Values, 4);
-    }
-    
-    if (this.originalScales) {
-      this.scalesTexture = this.createDataTexture(this.originalScales, 1);
-    }
-    
-    if (this.originalGridValues1) {
-      this.gridValues1Texture = this.createDataTexture(this.originalGridValues1, 4);
-    }
-    
-    if (this.originalGridValues2) {
-      this.gridValues2Texture = this.createDataTexture(this.originalGridValues2, 4);
-    }
-    
-    if (this.originalSH1Values) {
-      // Split SH1 values into three textures (each with 3 components)
-      const sh1_0Values = new Float32Array(this.instanceCount * 3);
-      const sh1_1Values = new Float32Array(this.instanceCount * 3);
-      const sh1_2Values = new Float32Array(this.instanceCount * 3);
-      
-      for (let i = 0; i < this.instanceCount; i++) {
-        sh1_0Values[i * 3 + 0] = this.originalSH1Values[i * 9 + 0];
-        sh1_0Values[i * 3 + 1] = this.originalSH1Values[i * 9 + 1];
-        sh1_0Values[i * 3 + 2] = this.originalSH1Values[i * 9 + 2];
-        
-        sh1_1Values[i * 3 + 0] = this.originalSH1Values[i * 9 + 3];
-        sh1_1Values[i * 3 + 1] = this.originalSH1Values[i * 9 + 4];
-        sh1_1Values[i * 3 + 2] = this.originalSH1Values[i * 9 + 5];
-        
-        sh1_2Values[i * 3 + 0] = this.originalSH1Values[i * 9 + 6];
-        sh1_2Values[i * 3 + 1] = this.originalSH1Values[i * 9 + 7];
-        sh1_2Values[i * 3 + 2] = this.originalSH1Values[i * 9 + 8];
-      }
-      
-      this.sh1_0Texture = this.createDataTexture(sh1_0Values, 3);
-      this.sh1_1Texture = this.createDataTexture(sh1_1Values, 3);
-      this.sh1_2Texture = this.createDataTexture(sh1_2Values, 3);
-    }
+    // Create optimized textures instead of individual texture creation
+    this.createOptimizedTextures();
     
     // Unbind the VAO
     gl.bindVertexArray(null);
@@ -1420,64 +1381,60 @@ export class Viewer {
   /**
    * Creates a texture from float data
    */
-  private createDataTexture(data: Float32Array, componentsPerElement: number): WebGLTexture | null {
+  private createDataTexture(
+    data: Float32Array, 
+    componentsPerElement: number, 
+    textureType: TextureType
+  ): WebGLTexture | null {
     const gl = this.gl!;
     
-    // Calculate texture dimensions
-    // Need to determine size that fits all elements
+    // Calculate dimensions that won't exceed hardware limits
     const numElements = data.length / componentsPerElement;
-    this.textureWidth = Math.min(4096, Math.ceil(Math.sqrt(numElements)));
-    this.textureHeight = Math.ceil(numElements / this.textureWidth);
+    const maxTextureSize = Math.min(4096, gl.getParameter(gl.MAX_TEXTURE_SIZE));
+    const width = Math.min(maxTextureSize, Math.ceil(Math.sqrt(numElements)));
+    const height = Math.ceil(numElements / width);
     
-    console.log(`Creating texture with dimensions ${this.textureWidth}x${this.textureHeight} for ${numElements} elements`);
+    // Store dimensions based on texture type
+    const paddedWidth = Math.ceil(width * componentsPerElement / 4) * 4;
+    const finalWidth = paddedWidth / 4;
     
-    // Create texture
+    switch (textureType) {
+      case TextureType.MainAttributes:
+        this.posScaleWidth = finalWidth;
+        this.posScaleHeight = height;
+        console.log(`Creating main attributes texture: ${finalWidth}x${height}`);
+        break;
+      case TextureType.GridValues:
+        this.gridValuesWidth = finalWidth;
+        this.gridValuesHeight = height;
+        console.log(`Creating grid values texture: ${finalWidth}x${height}`);
+        break;
+      case TextureType.ShCoefficients:
+        this.shWidth = finalWidth;
+        this.shHeight = height;
+        console.log(`Creating SH coefficients texture: ${finalWidth}x${height}`);
+        break;
+    }
+    
+    // Create and set up texture
     const texture = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, texture);
     
-    // Create temporary array with correct size for the texture
-    // (needs to be width * height * components in size)
-    const fullSize = this.textureWidth * this.textureHeight * componentsPerElement;
-    const textureData = new Float32Array(fullSize);
-    
-    // Fill with data (leaving any extra space as zeros)
-    textureData.set(data);
-    
-    // Determine internal format and format based on components
-    let internalFormat, format;
-    switch (componentsPerElement) {
-      case 1:
-        internalFormat = gl.R32F;
-        format = gl.RED;
-        break;
-      case 2:
-        internalFormat = gl.RG32F;
-        format = gl.RG;
-        break;
-      case 3:
-        internalFormat = gl.RGB32F;
-        format = gl.RGB;
-        break;
-      case 4:
-        internalFormat = gl.RGBA32F;
-        format = gl.RGBA;
-        break;
-      default:
-        console.error(`Unsupported number of components: ${componentsPerElement}`);
-        return null;
-    }
+    // Create padded data array
+    const paddedData = new Float32Array(paddedWidth * height);
+    paddedData.set(data);
     
     // Upload data to texture
     gl.texImage2D(
       gl.TEXTURE_2D,
       0,
-      internalFormat,
-      this.textureWidth,
-      this.textureHeight,
+      gl.RGBA32F,
+      finalWidth,
+      height,
       0,
-      format,
+      gl.RGBA,
       gl.FLOAT,
-      textureData
+      paddedData
     );
     
     // Set texture parameters
@@ -1487,5 +1444,88 @@ export class Viewer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     
     return texture;
+  }
+
+  private createOptimizedTextures(): void {
+    // First, check if all the data is available
+    if (!this.originalPositions || !this.originalSH0Values || !this.originalScales || 
+        !this.originalGridValues1 || !this.originalGridValues2 || !this.originalSH1Values) {
+      console.error('Missing required data for texture creation');
+      return;
+    }
+    
+    // Get the WebGL context
+    const gl = this.gl!;
+    if (!gl) {
+      console.error('WebGL context is null');
+      return;
+    }
+    
+    // 1. Create position + scale texture (4 values per instance)
+    const posScaleData = new Float32Array(this.instanceCount * 4);
+    for (let i = 0; i < this.instanceCount; i++) {
+      // xyz position
+      posScaleData[i * 4 + 0] = this.originalPositions[i * 3 + 0];
+      posScaleData[i * 4 + 1] = this.originalPositions[i * 3 + 1];
+      posScaleData[i * 4 + 2] = this.originalPositions[i * 3 + 2];
+      
+      // scale
+      posScaleData[i * 4 + 3] = this.originalScales ? 
+        this.originalScales[i] : this.baseVoxelSize;
+    }
+    
+    // 2. Create grid values texture (8 values per instance = 2 vec4s)
+    const gridValuesData = new Float32Array(this.instanceCount * 8);
+    for (let i = 0; i < this.instanceCount; i++) {
+      // First 4 corners
+      gridValuesData[i * 8 + 0] = this.originalGridValues1[i * 4 + 0];
+      gridValuesData[i * 8 + 1] = this.originalGridValues1[i * 4 + 1];
+      gridValuesData[i * 8 + 2] = this.originalGridValues1[i * 4 + 2];
+      gridValuesData[i * 8 + 3] = this.originalGridValues1[i * 4 + 3];
+      
+      // Second 4 corners
+      gridValuesData[i * 8 + 4] = this.originalGridValues2[i * 4 + 0];
+      gridValuesData[i * 8 + 5] = this.originalGridValues2[i * 4 + 1];
+      gridValuesData[i * 8 + 6] = this.originalGridValues2[i * 4 + 2];
+      gridValuesData[i * 8 + 7] = this.originalGridValues2[i * 4 + 3];
+    }
+    
+    // 3. Create SH0 + SH1 texture (4+8=12 values per instance = 3 vec4s)
+    const shData = new Float32Array(this.instanceCount * 12);
+    for (let i = 0; i < this.instanceCount; i++) {
+      // SH0 (rgba)
+      shData[i * 12 + 0] = this.originalSH0Values[i * 4 + 0];
+      shData[i * 12 + 1] = this.originalSH0Values[i * 4 + 1];
+      shData[i * 12 + 2] = this.originalSH0Values[i * 4 + 2];
+      shData[i * 12 + 3] = this.originalSH0Values[i * 4 + 3];
+      
+      // SH1 (first 8 values out of 9, we'll drop the last one or use 0)
+      for (let j = 0; j < 8; j++) {
+        if (j < this.originalSH1Values.length / this.instanceCount) {
+          shData[i * 12 + 4 + j] = this.originalSH1Values[i * 9 + j];
+        } else {
+          shData[i * 12 + 4 + j] = 0.0;
+        }
+      }
+    }
+    
+    // Create textures using the existing createDataTexture method with the correct parameters
+    this.posScaleTexture = this.createDataTexture(
+      posScaleData, 
+      4,  // 4 components per element (exactly one vec4)
+      TextureType.MainAttributes
+    );
+    
+    this.gridValuesTexture = this.createDataTexture(
+      gridValuesData, 
+      8,  // 8 components per element (2 vec4s)
+      TextureType.GridValues
+    );
+    
+    this.shTexture = this.createDataTexture(
+      shData, 
+      12, // 12 components per element (3 vec4s)
+      TextureType.ShCoefficients
+    );
   }
 }
