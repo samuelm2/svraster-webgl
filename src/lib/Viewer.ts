@@ -1167,13 +1167,6 @@ export class Viewer {
     }
   }
 
-  /**
-   * React to camera movement
-   */
-  public handleCameraChange(): void {
-    // Request a new sort when the camera changes
-    //this.requestSort();
-  }
 
   /**
    * Initialize orbital camera controls
@@ -1211,7 +1204,6 @@ export class Viewer {
       
       this.lastMouseX = event.clientX;
       this.lastMouseY = event.clientY;
-      this.handleCameraChange();
     });
     
     // Mouse up event
@@ -1226,7 +1218,6 @@ export class Viewer {
       // Zoom in or out
       const zoomAmount = event.deltaY * this.zoomSpeed * 0.01;
       this.zoom(zoomAmount);
-      this.handleCameraChange();
     });
     
     // Prevent context menu on right click
