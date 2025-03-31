@@ -3,10 +3,10 @@
  */
 export interface PLYData {
   vertices: Float32Array;    // Position data (x, y, z)
-  colors: Float32Array;      // Color data from f_dc fields
+  sh0Values: Float32Array;      // Color data from f_dc fields
   octlevels?: Uint8Array;    // Optional octlevel data for scaling
   octpaths?: Uint32Array;    // Optional octpath data
-  restValues?: Float32Array; // Optional f_rest values (0-23)
+  shRestValues?: Float32Array; // Optional f_rest values (0-23)
   gridValues?: Float32Array; // Optional grid point density values (0-7)
   vertexCount: number;
   sceneCenter?: [number, number, number]; // Optional scene center
@@ -230,7 +230,7 @@ export class LoadPLY {
     
     // Prepare arrays for the data
     const vertices = new Float32Array(vertexCount * 3); // x, y, z for each vertex
-    const colors = new Float32Array(vertexCount * 4);   // r, g, b, a for each vertex
+    const sh0s = new Float32Array(vertexCount * 4);   // r, g, b, a for each vertex
     
     // Create a DataView for binary reading
     const dataView = new DataView(arrayBuffer);
@@ -246,11 +246,11 @@ export class LoadPLY {
       vertices[vertexIndex + 1] = dataView.getFloat32(vertexOffset + propertyOffsets['y'], true);
       vertices[vertexIndex + 2] = dataView.getFloat32(vertexOffset + propertyOffsets['z'], true);
       
-      // Read colors (f_dc_0, f_dc_1, f_dc_2)
-      colors[colorIndex] = dataView.getFloat32(vertexOffset + propertyOffsets['f_dc_0'], true);
-      colors[colorIndex + 1] = dataView.getFloat32(vertexOffset + propertyOffsets['f_dc_1'], true);
-      colors[colorIndex + 2] = dataView.getFloat32(vertexOffset + propertyOffsets['f_dc_2'], true);
-      colors[colorIndex + 3] = 1.0; // Alpha channel (full opacity)
+      // Read sh0s (f_dc_0, f_dc_1, f_dc_2)
+      sh0s[colorIndex] = dataView.getFloat32(vertexOffset + propertyOffsets['f_dc_0'], true);
+      sh0s[colorIndex + 1] = dataView.getFloat32(vertexOffset + propertyOffsets['f_dc_1'], true);
+      sh0s[colorIndex + 2] = dataView.getFloat32(vertexOffset + propertyOffsets['f_dc_2'], true);
+      sh0s[colorIndex + 3] = 1.0; // Alpha channel (full opacity)
       
       // Read octlevel if present
       if (hasOctlevel && octlevels && propertyOffsets['octlevel'] !== undefined) {
@@ -287,16 +287,16 @@ export class LoadPLY {
       // For debugging, log a few vertices
       if (i < 5) {
         console.log(`Vertex ${i}: (${vertices[vertexIndex]}, ${vertices[vertexIndex + 1]}, ${vertices[vertexIndex + 2]})`);
-        console.log(`Color ${i}: (${colors[colorIndex]}, ${colors[colorIndex + 1]}, ${colors[colorIndex + 2]})`);
+        console.log(`Color ${i}: (${sh0s[colorIndex]}, ${sh0s[colorIndex + 1]}, ${sh0s[colorIndex + 2]})`);
       }
     }
     
     return {
       vertices,
-      colors,
+      sh0Values: sh0s,
       octlevels,
       octpaths,
-      restValues,
+      shRestValues: restValues,
       gridValues,
       vertexCount,
       sceneCenter,

@@ -28,7 +28,6 @@ export class Viewer {
   private camera: Camera;
   
   // Animation
-  private rotationSpeed: number = 0.001;
   private lastFrameTime: number = 0;
   
   // Rendering flags
@@ -77,16 +76,6 @@ export class Viewer {
   // Add these properties to the Viewer class
 
   private originalSH1Values: Float32Array | null = null;
-
-  // Add these properties to the Viewer class
-  private positionsTexture: WebGLTexture | null = null;
-  private sh0Texture: WebGLTexture | null = null;
-  private scalesTexture: WebGLTexture | null = null;
-  private gridValues1Texture: WebGLTexture | null = null;
-  private gridValues2Texture: WebGLTexture | null = null;
-  private sh1_0Texture: WebGLTexture | null = null;
-  private sh1_1Texture: WebGLTexture | null = null;
-  private sh1_2Texture: WebGLTexture | null = null;
 
   private instanceIndexBuffer: WebGLBuffer | null = null;
   private sortedIndicesArray: Uint32Array | null = null;
@@ -789,7 +778,7 @@ export class Viewer {
     octlevels?: Uint8Array,
     octpaths?: Uint32Array,
     gridValues?: Float32Array,
-    restValues?: Float32Array
+    shRestValues?: Float32Array
   ): void {
     console.log(`Loading point cloud with ${positions.length / 3} points`);
     
@@ -809,21 +798,21 @@ export class Viewer {
       }
     }
     
-    // Extract SH1 coefficients from restValues
-    if (restValues && restValues.length > 0) {
+    // Extract SH1 coefficients from shRestValues
+    if (shRestValues && shRestValues.length > 0) {
       // Each vertex has multiple rest values, we need to extract 9 values for SH1
-      const restPerVertex = restValues.length / positions.length * 3;
+      const restPerVertex = shRestValues.length / positions.length * 3;
       console.log(`Found ${restPerVertex} rest values per vertex, extracting SH1 (9 values per vertex)`);
       
       // We need space for 9 values per vertex
       this.originalSH1Values = new Float32Array(positions.length / 3 * 9);
       
       for (let i = 0; i < positions.length / 3; i++) {
-        // Extract 9 values from restValues for each vertex
+        // Extract 9 values from shRestValues for each vertex
         for (let j = 0; j < 9; j++) {
           // Only extract if we have enough values
           if (j < restPerVertex) {
-            this.originalSH1Values[i * 9 + j] = restValues[i * restPerVertex + j];
+            this.originalSH1Values[i * 9 + j] = shRestValues[i * restPerVertex + j];
           } else {
             // If not enough rest values, set to 0
             this.originalSH1Values[i * 9 + j] = 0.0;
