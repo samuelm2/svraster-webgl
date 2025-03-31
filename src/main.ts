@@ -214,7 +214,7 @@ function addPLYUploadUI(viewer: Viewer, camera: Camera) {
           plyData.vertices, 
           plyData.sh0Values, 
           plyData.octlevels, 
-          undefined, 
+          plyData.octpaths, 
           plyData.gridValues,
           plyData.shRestValues
         );

@@ -597,6 +597,10 @@ export class Viewer {
        halfSize,  halfSize, -halfSize,
        halfSize, -halfSize, -halfSize,
     ];
+
+    if (this.positionBuffer) {
+      gl.deleteBuffer(this.positionBuffer);
+    }
     
     // Create position buffer
     this.positionBuffer = gl.createBuffer();
@@ -629,6 +633,11 @@ export class Viewer {
       3, 2, 6,    3, 6, 5,    // Top face
       0, 4, 7,    0, 7, 1     // Bottom face
     ];
+    
+
+    if (this.indexBuffer) {
+      gl.deleteBuffer(this.indexBuffer);
+    }
     
     // Create index buffer
     this.indexBuffer = gl.createBuffer();
@@ -739,7 +748,6 @@ export class Viewer {
       this.shWidth, this.shHeight);
     
     // Draw instanced geometry
-    console.log('Drawing with instance count:', this.instanceCount);
     if (this.instanceCount <= 0) {
         console.warn('No instances to draw');
         requestAnimationFrame((time) => this.render(time));
@@ -757,17 +765,6 @@ export class Viewer {
     // Unbind the VAO
     gl.bindVertexArray(null);
     
-    // Debug: Log SH1 values periodically to check if they're being used
-    if (this.lastFrameTime === 0 && this.originalSH1Values) {
-      const nonZeroCount = Array.from(this.originalSH1Values).filter(v => Math.abs(v) > 0.0001).length;
-      console.log(`SH1 values check: ${nonZeroCount} non-zero values out of ${this.originalSH1Values.length}`);
-      if (nonZeroCount > 0) {
-        console.log('SH1 values are present and will affect rendering');
-      } else {
-        console.log('Warning: All SH1 values are near zero, no directional lighting effect will be visible');
-      }
-    }
-    
     // Request animation frame for continuous rendering
     requestAnimationFrame((time) => this.render(time));
   }
@@ -777,10 +774,10 @@ export class Viewer {
    */
   public loadPointCloud(
     positions: Float32Array, 
-    sh0Values?: Float32Array,
-    octlevels?: Uint8Array,
-    octpaths?: Uint32Array,
-    gridValues?: Float32Array,
+    sh0Values: Float32Array,
+    octlevels: Uint8Array,
+    octpaths: Uint32Array,
+    gridValues: Float32Array,
     shRestValues?: Float32Array
   ): void {
     console.log(`Loading point cloud with ${positions.length / 3} points`);
@@ -789,18 +786,11 @@ export class Viewer {
     this.originalPositions = new Float32Array(positions);
     
     // Save SH0 (base colors)
-    if (sh0Values) {
-      this.originalSH0Values = new Float32Array(sh0Values);
-    } else {
-      this.originalSH0Values = new Float32Array(positions.length / 3 * 4);
-      for (let i = 0; i < positions.length / 3; i++) {
-        this.originalSH0Values[i * 4 + 0] = 1.0; // R
-        this.originalSH0Values[i * 4 + 1] = 1.0; // G
-        this.originalSH0Values[i * 4 + 2] = 1.0; // B
-      }
-    }
+    this.originalSH0Values = new Float32Array(sh0Values);
     
-    // Extract SH1 coefficients from shRestValues
+    // We need space for 9 values per vertex
+    
+    // Extract SH1 coefficients from shRestValues if provided
     if (shRestValues && shRestValues.length > 0) {
       // Each vertex has multiple rest values, we need to extract 9 values for SH1
       const restPerVertex = shRestValues.length / positions.length * 3;
@@ -824,73 +814,56 @@ export class Viewer {
       
       console.log(`Extracted ${this.originalSH1Values.length / 9} SH1 sets with 9 values each`);
       console.log('SH1 sample values (first vertex):', 
-                  this.originalSH1Values.slice(0, 9));
+                this.originalSH1Values.slice(0, 9));
     } else {
-      // If no rest values, use zeros (no directional lighting)
+      // If no rest values provided, use zeros (no directional lighting)
       this.originalSH1Values = new Float32Array(positions.length / 3 * 9);
-      console.log('No SH1 values found, using default (no directional lighting)');
+      console.log('No SH1 values provided, using default (no directional lighting)');
     }
     
     // Save octree data
-    if (octlevels) {
-      this.originalOctlevels = new Uint8Array(octlevels);
-      
-      this.originalScales = new Float32Array(octlevels.length);
-      for (let i = 0; i < octlevels.length; i++) {
-        this.originalScales[i] = this.baseVoxelSize * Math.pow(2, -octlevels[i]);
+    this.originalOctlevels = new Uint8Array(octlevels);
+    
+    this.originalScales = new Float32Array(octlevels.length);
+    for (let i = 0; i < octlevels.length; i++) {
+      this.originalScales[i] = this.baseVoxelSize * Math.pow(2, -octlevels[i]);
+    }
+    
+    this.originalOctpaths = new Uint32Array(octpaths);
+    
+    // Save grid values
+    console.log(`Saving ${gridValues.length} grid values`);
+    this.originalGridValues1 = new Float32Array(positions.length / 3 * 4);
+    this.originalGridValues2 = new Float32Array(positions.length / 3 * 4);
+    
+    // Check if gridValues contains non-1.0 values
+    let hasNonOneValues = false;
+    let minVal = 1.0, maxVal = 1.0;
+    
+    for (let i = 0; i < Math.min(gridValues.length, 100); i++) {
+      if (gridValues[i] !== 1.0) {
+        hasNonOneValues = true;
+        minVal = Math.min(minVal, gridValues[i]);
+        maxVal = Math.max(maxVal, gridValues[i]);
       }
     }
     
-    if (octpaths) {
-      this.originalOctpaths = new Uint32Array(octpaths);
-    }
+    console.log(`Grid values check: Has values != 1.0: ${hasNonOneValues}, Min: ${minVal}, Max: ${maxVal}`);
+    console.log(`First few grid values:`, gridValues.slice(0, 24));
     
-    // Save grid values if available
-    if (gridValues) {
-      console.log(`Saving ${gridValues.length} grid values`);
-      this.originalGridValues1 = new Float32Array(positions.length / 3 * 4);
-      this.originalGridValues2 = new Float32Array(positions.length / 3 * 4);
+    // Use original, non-swapped grid values order - this will work with our shader fix
+    for (let i = 0; i < positions.length / 3; i++) {
+      // First 4 corners in density0 (following the specified ordering)
+      this.originalGridValues1[i * 4 + 0] = gridValues[i * 8 + 0]; // Corner [0,0,0]
+      this.originalGridValues1[i * 4 + 1] = gridValues[i * 8 + 1]; // Corner [0,0,1]
+      this.originalGridValues1[i * 4 + 2] = gridValues[i * 8 + 2]; // Corner [0,1,0]
+      this.originalGridValues1[i * 4 + 3] = gridValues[i * 8 + 3]; // Corner [0,1,1]
       
-      // Check if gridValues contains non-1.0 values
-      let hasNonOneValues = false;
-      let minVal = 1.0, maxVal = 1.0;
-      
-      for (let i = 0; i < Math.min(gridValues.length, 100); i++) {
-        if (gridValues[i] !== 1.0) {
-          hasNonOneValues = true;
-          minVal = Math.min(minVal, gridValues[i]);
-          maxVal = Math.max(maxVal, gridValues[i]);
-        }
-      }
-      
-      console.log(`Grid values check: Has values != 1.0: ${hasNonOneValues}, Min: ${minVal}, Max: ${maxVal}`);
-      console.log(`First few grid values:`, gridValues.slice(0, 24));
-      
-      // Use original, non-swapped grid values order - this will work with our shader fix
-      for (let i = 0; i < positions.length / 3; i++) {
-        // First 4 corners in density0 (following the specified ordering)
-        this.originalGridValues1[i * 4 + 0] = gridValues[i * 8 + 0]; // Corner [0,0,0]
-        this.originalGridValues1[i * 4 + 1] = gridValues[i * 8 + 1]; // Corner [0,0,1]
-        this.originalGridValues1[i * 4 + 2] = gridValues[i * 8 + 2]; // Corner [0,1,0]
-        this.originalGridValues1[i * 4 + 3] = gridValues[i * 8 + 3]; // Corner [0,1,1]
-        
-        // Next 4 corners in density1 (following the specified ordering)
-        this.originalGridValues2[i * 4 + 0] = gridValues[i * 8 + 4]; // Corner [1,0,0]
-        this.originalGridValues2[i * 4 + 1] = gridValues[i * 8 + 5]; // Corner [1,0,1]
-        this.originalGridValues2[i * 4 + 2] = gridValues[i * 8 + 6]; // Corner [1,1,0]
-        this.originalGridValues2[i * 4 + 3] = gridValues[i * 8 + 7]; // Corner [1,1,1]
-      }
-    } else {
-      // If no grid values, use default density of 1.0 for all corners
-      this.originalGridValues1 = new Float32Array(positions.length / 3 * 4);
-      this.originalGridValues2 = new Float32Array(positions.length / 3 * 4);
-      
-      for (let i = 0; i < positions.length / 3; i++) {
-        for (let j = 0; j < 4; j++) {
-          this.originalGridValues1[i * 4 + j] = 1.0;
-          this.originalGridValues2[i * 4 + j] = 1.0;
-        }
-      }
+      // Next 4 corners in density1 (following the specified ordering)
+      this.originalGridValues2[i * 4 + 0] = gridValues[i * 8 + 4]; // Corner [1,0,0]
+      this.originalGridValues2[i * 4 + 1] = gridValues[i * 8 + 5]; // Corner [1,0,1]
+      this.originalGridValues2[i * 4 + 2] = gridValues[i * 8 + 6]; // Corner [1,1,0]
+      this.originalGridValues2[i * 4 + 3] = gridValues[i * 8 + 7]; // Corner [1,1,1]
     }
     
     // Set the instance count
@@ -1151,12 +1124,6 @@ export class Viewer {
       console.log(`Sending ${octpaths.length} octpaths to sort worker`);
     }
     
-    // Debug check of grid values
-    if (this.originalGridValues1 && this.originalGridValues2) {
-      console.log('Original grid values check:',
-        this.originalGridValues1[0], this.originalGridValues1[1],
-        this.originalGridValues2[0], this.originalGridValues2[1]);
-    }
     
     // Send the data to the worker
     this.sortWorker.postMessage({
