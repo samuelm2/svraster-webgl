@@ -1,4 +1,7 @@
 /**
+ * 
+ * NOTE: This file is complete AI SLOP right now. It doesn't work and doesn't follow the paper.
+ * 
  * MortonSorter class for sorting voxels in correct back-to-front order
  * Based on direction-dependent Morton order sorting as described in the paper
  */
