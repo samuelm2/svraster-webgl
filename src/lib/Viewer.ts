@@ -1017,8 +1017,6 @@ export class Viewer {
    * Set scene parameters from PLY file header
    */
   public setSceneParameters(center: [number, number, number], extent: number): void {
-    this.sceneCenter = center;
-    this.sceneExtent = extent;
     this.baseVoxelSize = extent; // Use the extent as the base voxel size
     
     console.log(`Scene center: [${center}], extent: ${extent}, base voxel size: ${this.baseVoxelSize}`);
