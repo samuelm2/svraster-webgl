@@ -235,8 +235,8 @@ export class Viewer {
         return texture(tex, coord);
       }
 
-      // Spherical Harmonics evaluation with full 9 coefficients (moved from fragment shader)
-      vec3 evaluateSH(vec4 sh0, vec3 sh1_0, vec3 sh1_1, vec3 sh1_2, vec3 direction) {
+      // Spherical Harmonics evaluation with full 9 coefficients
+      vec3 evaluateSH(vec3 sh0, vec3 sh1_0, vec3 sh1_1, vec3 sh1_2, vec3 direction) {
         // Normalize direction vector
         vec3 dir = normalize(direction);
 
@@ -244,7 +244,7 @@ export class Viewer {
         dir.y = -dir.y;
         
         // SH0
-        vec3 color = sh0.rgb * 0.28209479177387814;
+        vec3 color = sh0 * 0.28209479177387814;
         
         // Calculate basis functions for SH1 (first order terms only)
         // Y_1,-1 = 0.488603 * y
@@ -262,7 +262,6 @@ export class Viewer {
         
         color += sh1_contrib;
         color += 0.5;
-        
         
         return max(color, 0.0);
       }
@@ -282,14 +281,18 @@ export class Viewer {
         vec4 gridValues2 = fetch4(uGridValuesTexture, idx, 1, uGridValuesDims, 2);
         
         // Fetch SH values (3 vec4s per instance)
-        vec4 sh0 = fetch4(uShTexture, idx, 0, uShDims, 3);
+        vec4 sh0_vec4 = fetch4(uShTexture, idx, 0, uShDims, 3);
         vec4 sh1_part1 = fetch4(uShTexture, idx, 1, uShDims, 3);
         vec4 sh1_part2 = fetch4(uShTexture, idx, 2, uShDims, 3);
         
-        // Extract SH1 coefficients
-        vec3 sh1_0 = sh1_part1.xyz;
-        vec3 sh1_1 = vec3(sh1_part1.w, sh1_part2.xy);
-        vec3 sh1_2 = vec3(sh1_part2.zw, 0.0); // Fix syntax error and only use 8/9 SH values
+        // Extract SH0 (rgb only - first 3 components)
+        vec3 sh0 = sh0_vec4.rgb;
+        
+        // Extract SH1 values (all 9 components)
+        // The 4th value of sh0_vec4 is the first SH1 value
+        vec3 sh1_0 = vec3(sh0_vec4.a, sh1_part1.xy);
+        vec3 sh1_1 = vec3(sh1_part1.zw, sh1_part2.x);
+        vec3 sh1_2 = sh1_part2.yzw;
     
         // Scale the vertex position by instance scale
         vec4 scaledPosition = vec4(aVertexPosition.xyz * instanceScale, aVertexPosition.w);
@@ -794,7 +797,6 @@ export class Viewer {
         this.originalSH0Values[i * 4 + 0] = 1.0; // R
         this.originalSH0Values[i * 4 + 1] = 1.0; // G
         this.originalSH0Values[i * 4 + 2] = 1.0; // B
-        this.originalSH0Values[i * 4 + 3] = 1.0; // A
       }
     }
     
@@ -951,13 +953,6 @@ export class Viewer {
   }
   
   /**
-   * Set rotation speed
-   */
-  public setRotationSpeed(speed: number): void {
-    this.rotationSpeed = speed;
-  }
-  
-  /**
    * Resize the canvas to specified dimensions
    */
   public resize(width: number, height: number): void {
@@ -991,16 +986,6 @@ export class Viewer {
     // Clean up WebGL resources
     const gl = this.gl;
     if (gl) {
-      // Delete textures
-      if (this.positionsTexture) gl.deleteTexture(this.positionsTexture);
-      if (this.sh0Texture) gl.deleteTexture(this.sh0Texture);
-      if (this.scalesTexture) gl.deleteTexture(this.scalesTexture);
-      if (this.gridValues1Texture) gl.deleteTexture(this.gridValues1Texture);
-      if (this.gridValues2Texture) gl.deleteTexture(this.gridValues2Texture);
-      if (this.sh1_0Texture) gl.deleteTexture(this.sh1_0Texture);
-      if (this.sh1_1Texture) gl.deleteTexture(this.sh1_1Texture);
-      if (this.sh1_2Texture) gl.deleteTexture(this.sh1_2Texture);
-      
       // Delete buffers
       if (this.positionBuffer) gl.deleteBuffer(this.positionBuffer);
       if (this.indexBuffer) gl.deleteBuffer(this.indexBuffer);
@@ -1479,21 +1464,20 @@ export class Viewer {
       gridValuesData[i * 8 + 7] = this.originalGridValues2[i * 4 + 3];
     }
     
-    // 3. Create SH0 + SH1 texture (4+8=12 values per instance = 3 vec4s)
+    // 3. Create SH0 + SH1 texture (3+9=12 values per instance = 3 vec4s)
     const shData = new Float32Array(this.instanceCount * 12);
     for (let i = 0; i < this.instanceCount; i++) {
-      // SH0 (rgba)
-      shData[i * 12 + 0] = this.originalSH0Values[i * 4 + 0];
-      shData[i * 12 + 1] = this.originalSH0Values[i * 4 + 1];
-      shData[i * 12 + 2] = this.originalSH0Values[i * 4 + 2];
-      shData[i * 12 + 3] = this.originalSH0Values[i * 4 + 3];
+      // SH0 (rgb) - first 3 values
+      shData[i * 12 + 0] = this.originalSH0Values[i * 3 + 0]; // R
+      shData[i * 12 + 1] = this.originalSH0Values[i * 3 + 1]; // G
+      shData[i * 12 + 2] = this.originalSH0Values[i * 3 + 2]; // B
       
-      // SH1 (first 8 values out of 9, we'll drop the last one or use 0)
-      for (let j = 0; j < 8; j++) {
+      // SH1 (all 9 values) - starting from the 4th position
+      for (let j = 0; j < 9; j++) {
         if (j < this.originalSH1Values.length / this.instanceCount) {
-          shData[i * 12 + 4 + j] = this.originalSH1Values[i * 9 + j];
+          shData[i * 12 + 3 + j] = this.originalSH1Values[i * 9 + j];
         } else {
-          shData[i * 12 + 4 + j] = 0.0;
+          shData[i * 12 + 3 + j] = 0.0;
         }
       }
     }

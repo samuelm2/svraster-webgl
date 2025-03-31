@@ -230,7 +230,7 @@ export class LoadPLY {
     
     // Prepare arrays for the data
     const vertices = new Float32Array(vertexCount * 3); // x, y, z for each vertex
-    const sh0s = new Float32Array(vertexCount * 4);   // r, g, b, a for each vertex
+    const sh0s = new Float32Array(vertexCount * 3);   // r, g, b, a for each vertex
     
     // Create a DataView for binary reading
     const dataView = new DataView(arrayBuffer);
@@ -239,7 +239,7 @@ export class LoadPLY {
     for (let i = 0; i < vertexCount; i++) {
       const vertexOffset = dataOffset + (i * vertexSize);
       const vertexIndex = i * 3;
-      const colorIndex = i * 4;
+      const colorIndex = i * 3;
       
       // Read position (x, y, z)
       vertices[vertexIndex] = dataView.getFloat32(vertexOffset + propertyOffsets['x'], true);
@@ -250,7 +250,6 @@ export class LoadPLY {
       sh0s[colorIndex] = dataView.getFloat32(vertexOffset + propertyOffsets['f_dc_0'], true);
       sh0s[colorIndex + 1] = dataView.getFloat32(vertexOffset + propertyOffsets['f_dc_1'], true);
       sh0s[colorIndex + 2] = dataView.getFloat32(vertexOffset + propertyOffsets['f_dc_2'], true);
-      sh0s[colorIndex + 3] = 1.0; // Alpha channel (full opacity)
       
       // Read octlevel if present
       if (hasOctlevel && octlevels && propertyOffsets['octlevel'] !== undefined) {
