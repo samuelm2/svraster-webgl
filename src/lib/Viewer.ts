@@ -105,6 +105,10 @@ export class Viewer {
   private lastRafTime: number = 0;
   private currentFrameTime: number = 0; // in milliseconds
 
+  // Add these properties to the class
+  private frameTimeHistory: number[] = [];
+  private frameTimeHistoryMaxLength: number = 10;
+
   constructor(containerId: string) {
     // Create canvas element
     this.canvas = document.createElement('canvas');
@@ -169,10 +173,25 @@ export class Viewer {
     
     // Initialize the FPS counter
     this.initFpsCounter();
-    
+
+    this.initWebGLConstants();
+
     this.render(0);
+
   }
   
+  private initWebGLConstants(): void {
+    const gl = this.gl!;
+    // Ensure blending is properly set up
+    gl.disable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+
+    // Enable backface culling
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
+  }
+
   /**
    * Updates canvas size to match container dimensions
    */
@@ -667,8 +686,22 @@ export class Viewer {
     
     // Calculate actual frame time in milliseconds
     if (this.lastRafTime > 0) {
-      this.currentFrameTime = timestamp - this.lastRafTime;
-      this.currentFps = 1000 / this.currentFrameTime; // FPS = 1000ms / frame time
+      const frameTime = timestamp - this.lastRafTime;
+      
+      // Add to frame time history
+      this.frameTimeHistory.push(frameTime);
+      
+      // Keep only last N frames
+      if (this.frameTimeHistory.length > this.frameTimeHistoryMaxLength) {
+        this.frameTimeHistory.shift(); // Remove oldest frame time
+      }
+      
+      // Calculate average frame time
+      const avgFrameTime = this.frameTimeHistory.reduce((sum, time) => sum + time, 0) / 
+                           this.frameTimeHistory.length;
+      
+      this.currentFrameTime = avgFrameTime;
+      this.currentFps = 1000 / avgFrameTime; // FPS = 1000ms / frame time
     }
     this.lastRafTime = timestamp;
     
@@ -677,7 +710,7 @@ export class Viewer {
       if (this.fpsElement) {
         const fps = Math.round(this.currentFps);
         const frameTime = this.currentFrameTime.toFixed(1);
-        this.fpsElement.textContent = `FPS: ${fps} | Frame: ${frameTime}ms`;
+        this.fpsElement.textContent = `FPS: ${fps} | Frame: ${frameTime}ms (avg of ${this.frameTimeHistory.length} frames)`;
       }
       this.lastFpsUpdateTime = timestamp;
     }
@@ -704,10 +737,6 @@ export class Viewer {
     gl.clearColor(0.0, 0.0, 0.0, 1.0);
     gl.clear(gl.COLOR_BUFFER_BIT);
     
-    // Ensure blending is properly set up
-    gl.disable(gl.DEPTH_TEST);
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 
 
     // Use our shader program
