@@ -14,9 +14,7 @@ document.addEventListener('DOMContentLoaded', () => {
   camera.setPosition(0, 0, 5);   // Position away from the scene
   camera.setTarget(0, 0, 0);     // Look at the center
   
-  // Set up manual camera animation
-  setupCameraAnimation(camera);
-  
+
   // Handle window resize events
   window.addEventListener('resize', () => {
     const width = window.innerWidth;
@@ -31,59 +29,7 @@ document.addEventListener('DOMContentLoaded', () => {
   addPLYUploadUI(viewer, camera);
 });
 
-/**
- * Set up manual camera animation
- */
-function setupCameraAnimation(camera: Camera) {
-  let orbitSpeed = 0.3;
-  let isOrbiting = true;
-  let lastTime = 0;
-  
-  // Animation parameters
-  let orbitRadius = 15;
-  let orbitHeight = 5;
-  let orbitAngle = 0;
-  
-  // Create animation loop
-  function animate(timestamp: number) {
-    // Calculate delta time in seconds
-    const deltaTime = (timestamp - lastTime) / 1000;
-    lastTime = timestamp;
-    
-    if (isOrbiting) {
-      // Update orbit angle based on speed
-      orbitAngle += deltaTime * orbitSpeed;
-      
-      // Calculate new camera position in a circle
-      const x = Math.sin(orbitAngle) * orbitRadius;
-      const z = Math.cos(orbitAngle) * orbitRadius;
-      
-      // Update camera position
-      camera.setPosition(x, orbitHeight, z);
-      
-      // Keep looking at the center
-      camera.setTarget(0, 0, 0);
-    }
-    
-    // Continue animation loop
-    requestAnimationFrame(animate);
-  }
-  
-  // Add controls to window for direct access
-  (window as any).cameraControls = {
-    setOrbitSpeed: (speed: number) => { orbitSpeed = speed; },
-    setOrbitRadius: (radius: number) => { orbitRadius = radius; },
-    setOrbitHeight: (height: number) => { orbitHeight = height; },
-    toggleOrbiting: () => { isOrbiting = !isOrbiting; },
-    getOrbitSpeed: () => orbitSpeed,
-    getOrbitRadius: () => orbitRadius,
-    getOrbitHeight: () => orbitHeight,
-    isOrbiting: () => isOrbiting
-  };
-  
-  // Start animation
-  requestAnimationFrame(animate);
-}
+
 
 /**
  * Add some basic UI controls for the demo
@@ -100,63 +46,19 @@ function addControls(viewer: Viewer, camera: Camera) {
   controls.style.fontFamily = 'sans-serif';
   controls.style.borderRadius = '5px';
   
-  // Add a toggle for animation
-  const animationToggle = document.createElement('div');
-  animationToggle.innerHTML = `
-    <label>
-      <input type="checkbox" id="animation-toggle" checked>
-      Enable orbit animation
-    </label>
+  // Add simple camera control instructions
+  controls.innerHTML = `
+    <h3>Camera Controls</h3>
+    <ul style="padding-left: 20px; margin: 5px 0;">
+      <li>Drag mouse to orbit camera</li>
+      <li>Scroll to zoom in/out</li>
+    </ul>
   `;
-  controls.appendChild(animationToggle);
-  
-  // Add a slider for rotation speed
-  const speedControl = document.createElement('div');
-  speedControl.innerHTML = `
-    <label for="speed">Orbit Speed: </label>
-    <input type="range" id="speed" min="0" max="1" step="0.05" value="0.3">
-  `;
-  controls.appendChild(speedControl);
-  
-  // Add a slider for orbit radius
-  const radiusControl = document.createElement('div');
-  radiusControl.innerHTML = `
-    <label for="radius">Orbit Radius: </label>
-    <input type="range" id="radius" min="5" max="300" step="5" value="15">
-  `;
-  controls.appendChild(radiusControl);
-  
-  // Add a slider for camera height
-  const heightControl = document.createElement('div');
-  heightControl.innerHTML = `
-    <label for="height">Camera Height: </label>
-    <input type="range" id="height" min="-10" max="15" step="0.5" value="-5">
-  `;
-  controls.appendChild(heightControl);
-  
   
   // Add the controls to the document
   document.body.appendChild(controls);
   
-  // Add event listeners for the controls
-  document.getElementById('animation-toggle')?.addEventListener('change', (e) => {
-    (window as any).cameraControls.toggleOrbiting();
-  });
-  
-  document.getElementById('speed')?.addEventListener('input', (e) => {
-    const target = e.target as HTMLInputElement;
-    (window as any).cameraControls.setOrbitSpeed(parseFloat(target.value));
-  });
-  
-  document.getElementById('radius')?.addEventListener('input', (e) => {
-    const target = e.target as HTMLInputElement;
-    (window as any).cameraControls.setOrbitRadius(parseFloat(target.value));
-  });
-  
-  document.getElementById('height')?.addEventListener('input', (e) => {
-    const target = e.target as HTMLInputElement;
-    (window as any).cameraControls.setOrbitHeight(parseFloat(target.value));
-  });
+  // No event listeners needed for the descriptive controls
 }
 
 /**
@@ -249,16 +151,10 @@ function addPLYUploadUI(viewer: Viewer, camera: Camera) {
             plyData.sceneCenter[2]
           );
           
-          // Update orbit controls
-          (window as any).cameraControls.setOrbitRadius(viewDistance);
-          (window as any).cameraControls.setOrbitHeight(viewDistance * 0.3);
         } else {
           // Fallback to default positioning
           camera.setPosition(0, 0, 5);
           camera.setTarget(0, 0, 0);
-          
-          (window as any).cameraControls.setOrbitRadius(5);
-          (window as any).cameraControls.setOrbitHeight(0);
         }
       } catch (error: any) {
         infoElement!.textContent = `Error loading PLY: ${error.message}`;

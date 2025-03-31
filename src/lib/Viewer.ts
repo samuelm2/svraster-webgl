@@ -33,8 +33,7 @@ export class Viewer {
   // Rendering flags
 
   // Scene properties for scaling calculation
-  private sceneCenter: [number, number, number] = [0, 0, 0];
-  private sceneExtent: number = 1.0;
+
   private baseVoxelSize: number = 0.01;
   
   private lastCameraPosition: [number, number, number] = [0, 0, 0];
@@ -96,7 +95,15 @@ export class Viewer {
   private shWidth: number = 0;
   private shHeight: number = 0;
 
-  // Then modify the createDataTexture function to use an enum for texture types
+
+  private fpsUpdateInterval: number = 500; // Update FPS display every 500ms
+  private lastFpsUpdateTime: number = 0;
+  private fpsElement: HTMLElement | null = null;
+  private currentFps: number = 0;
+
+  // Update these properties
+  private lastRafTime: number = 0;
+  private currentFrameTime: number = 0; // in milliseconds
 
   constructor(containerId: string) {
     // Create canvas element
@@ -109,8 +116,8 @@ export class Viewer {
     }
     
     // Set canvas to fill container completely
-    this.canvas.style.width = '100%';
-    this.canvas.style.height = '100%';
+    this.canvas.style.width = '100vw';
+    this.canvas.style.height = '100vh';
     this.canvas.style.display = 'block'; // Remove any extra space beneath the canvas
     
     // Append to container
@@ -159,6 +166,9 @@ export class Viewer {
     
     // Add mouse event listeners for orbital controls
     this.initOrbitControls();
+    
+    // Initialize the FPS counter
+    this.initFpsCounter();
     
     this.render(0);
   }
@@ -649,16 +659,28 @@ export class Viewer {
     
     console.log(`Initialized cube geometry with ${this.indexCount} indices`);
   }
-  
   /**
    * Main render function with time-based animation
    */
   private render(timestamp: number): void {
     const gl = this.gl!;
     
-    // Calculate delta time in seconds
-    const deltaTime = (timestamp - this.lastFrameTime) / 1000;
-    this.lastFrameTime = timestamp;
+    // Calculate actual frame time in milliseconds
+    if (this.lastRafTime > 0) {
+      this.currentFrameTime = timestamp - this.lastRafTime;
+      this.currentFps = 1000 / this.currentFrameTime; // FPS = 1000ms / frame time
+    }
+    this.lastRafTime = timestamp;
+    
+    // Update display at specified intervals
+    if (timestamp - this.lastFpsUpdateTime > this.fpsUpdateInterval) {
+      if (this.fpsElement) {
+        const fps = Math.round(this.currentFps);
+        const frameTime = this.currentFrameTime.toFixed(1);
+        this.fpsElement.textContent = `FPS: ${fps} | Frame: ${frameTime}ms`;
+      }
+      this.lastFpsUpdateTime = timestamp;
+    }
     
     // Check if camera has moved enough to trigger a resort
     const cameraPos = this.camera.getPosition();
@@ -1150,7 +1172,7 @@ export class Viewer {
    */
   public handleCameraChange(): void {
     // Request a new sort when the camera changes
-    this.requestSort();
+    //this.requestSort();
   }
 
   /**
@@ -1181,7 +1203,7 @@ export class Viewer {
       
       if (this.isDragging) {
         // Orbit the camera
-        this.orbit(deltaX, deltaY);
+        this.orbit(deltaX, -deltaY);
       } else if (this.isPanning) {
         // Pan the camera
         this.pan(deltaX, deltaY);
@@ -1467,5 +1489,23 @@ export class Viewer {
       12, // 12 components per element (3 vec4s)
       TextureType.ShCoefficients
     );
+  }
+
+  private initFpsCounter(): void {
+    // Create FPS counter element
+    this.fpsElement = document.createElement('div');
+    this.fpsElement.style.position = 'absolute';
+    this.fpsElement.style.bottom = '10px';
+    this.fpsElement.style.right = '10px';
+    this.fpsElement.style.padding = '5px 10px';
+    this.fpsElement.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+    this.fpsElement.style.color = 'white';
+    this.fpsElement.style.fontFamily = 'monospace';
+    this.fpsElement.style.fontSize = '14px';
+    this.fpsElement.style.borderRadius = '3px';
+    this.fpsElement.textContent = 'FPS: --';
+    
+    // Append to container
+    document.body.appendChild(this.fpsElement);
   }
 }
