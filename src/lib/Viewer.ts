@@ -519,7 +519,7 @@ export class Viewer {
     gl.bindVertexArray(this.vao);
     
     // Initialize cube geometry for instancing
-    this.initCubeGeometry(0.01); 
+    this.initCubeGeometry(1); 
     
     // Create and initialize the instance index buffer (this is all we need now for instancing)
     const instanceIndices = new Uint32Array(this.instanceCount);
