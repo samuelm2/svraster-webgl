@@ -109,6 +109,10 @@ export class Viewer {
   private frameTimeHistory: number[] = [];
   private frameTimeHistoryMaxLength: number = 10;
 
+  // Add these properties to the class
+  private sortTimeElement: HTMLElement | null = null;
+  private lastSortTime: number = 0;
+
   constructor(containerId: string) {
     // Create canvas element
     this.canvas = document.createElement('canvas');
@@ -710,8 +714,14 @@ export class Viewer {
       if (this.fpsElement) {
         const fps = Math.round(this.currentFps);
         const frameTime = this.currentFrameTime.toFixed(1);
-        this.fpsElement.textContent = `FPS: ${fps} | Frame: ${frameTime}ms (avg of ${this.frameTimeHistory.length} frames)`;
+        this.fpsElement.textContent = `FPS: ${fps} | Frame: ${frameTime}ms`;
       }
+      
+      // Update sort time display
+      if (this.sortTimeElement) {
+        this.sortTimeElement.textContent = `Sort: ${this.lastSortTime.toFixed(1)}ms`;
+      }
+      
       this.lastFpsUpdateTime = timestamp;
     }
     
@@ -1078,6 +1088,9 @@ export class Viewer {
           // Store the sorted indices for rendering
           this.sortedIndices = data.indices;
           this.pendingSortRequest = false;
+          
+          // Store the sort time
+          this.lastSortTime = data.sortTime || 0;
           
           if (this.sortedIndices) {
             console.log(`Received ${this.sortedIndices.length} sorted indices from worker`);
@@ -1510,20 +1523,29 @@ export class Viewer {
   }
 
   private initFpsCounter(): void {
+    // Create container for performance metrics
+    const perfContainer = document.createElement('div');
+    perfContainer.style.position = 'absolute';
+    perfContainer.style.bottom = '10px';
+    perfContainer.style.right = '10px';
+    perfContainer.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+    perfContainer.style.padding = '5px';
+    perfContainer.style.borderRadius = '3px';
+    perfContainer.style.fontFamily = 'monospace';
+    perfContainer.style.fontSize = '14px';
+    perfContainer.style.color = 'white';
+    
     // Create FPS counter element
     this.fpsElement = document.createElement('div');
-    this.fpsElement.style.position = 'absolute';
-    this.fpsElement.style.bottom = '10px';
-    this.fpsElement.style.right = '10px';
-    this.fpsElement.style.padding = '5px 10px';
-    this.fpsElement.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
-    this.fpsElement.style.color = 'white';
-    this.fpsElement.style.fontFamily = 'monospace';
-    this.fpsElement.style.fontSize = '14px';
-    this.fpsElement.style.borderRadius = '3px';
     this.fpsElement.textContent = 'FPS: --';
+    perfContainer.appendChild(this.fpsElement);
     
-    // Append to container
-    document.body.appendChild(this.fpsElement);
+    // Create sort time element
+    this.sortTimeElement = document.createElement('div');
+    this.sortTimeElement.textContent = 'Sort: -- ms';
+    perfContainer.appendChild(this.sortTimeElement);
+    
+    // Append container to document
+    document.body.appendChild(perfContainer);
   }
 }

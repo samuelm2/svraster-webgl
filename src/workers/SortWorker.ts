@@ -14,6 +14,7 @@ interface SortRequest {
 interface SortResponse {
   type: 'sorted';
   indices: Uint32Array;
+  sortTime: number;
 }
 
 // Web Worker context
@@ -42,7 +43,8 @@ ctx.addEventListener('message', (event: MessageEvent) => {
     // Send back sorted indices
     const response: SortResponse = {
       type: 'sorted',
-      indices
+      indices,
+      sortTime
     };
     
     ctx.postMessage(response, [response.indices.buffer]);
