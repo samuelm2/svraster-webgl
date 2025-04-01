@@ -76,91 +76,139 @@ function addPLYUploadUI(viewer: Viewer, camera: Camera) {
   uploadContainer.style.fontFamily = 'sans-serif';
   uploadContainer.style.borderRadius = '5px';
   
+  // Update the UI to have buttons for both inputs
   uploadContainer.innerHTML = `
     <h3>Load PLY Model</h3>
-    <input type="file" id="ply-upload" accept=".ply">
+    <div style="display: flex; gap: 5px; margin-bottom: 10px;">
+      <input type="file" id="ply-upload" accept=".ply" 
+        style="flex-grow: 1; padding: 5px; border-radius: 3px; border: 1px solid #ccc;">
+      <button id="load-file" style="padding: 5px 10px; border-radius: 3px; border: 1px solid #ccc; cursor: pointer;">
+        Load File
+      </button>
+    </div>
+    <div style="display: flex; gap: 5px; margin-bottom: 10px;">
+      <input type="text" id="ply-url" placeholder="Enter PLY URL" 
+        style="padding: 5px; border-radius: 3px; border: 1px solid #ccc; flex-grow: 1;">
+      <button id="load-url" style="padding: 5px 10px; border-radius: 3px; border: 1px solid #ccc; cursor: pointer;">
+        Load URL
+      </button>
+    </div>
     <div id="ply-info" style="margin-top: 10px; font-size: 12px;"></div>
   `;
   
   document.body.appendChild(uploadContainer);
   
-  // Handle file uploads
+  // Get UI elements
   const fileInput = document.getElementById('ply-upload') as HTMLInputElement;
-  fileInput.addEventListener('change', async (event) => {
-    const target = event.target as HTMLInputElement;
-    const files = target.files;
-    
-    if (files && files.length > 0) {
-      const file = files[0];
-      const infoElement = document.getElementById('ply-info');
+  const fileButton = document.getElementById('load-file') as HTMLButtonElement;
+  const urlInput = document.getElementById('ply-url') as HTMLInputElement;
+  const urlButton = document.getElementById('load-url') as HTMLButtonElement;
+  const infoElement = document.getElementById('ply-info')!;
+
+  // Helper function to update camera position based on PLY data
+  const updateCameraPosition = (plyData: any) => {
+    if (plyData.sceneCenter && plyData.sceneExtent) {
+      const viewDistance = plyData.sceneExtent * 2;
       
-      try {
-        infoElement!.textContent = 'Loading PLY file...';
-        
-        // Show loading progress
-        const startTime = performance.now();
-        
-        // Load the PLY file
-        const plyData = await LoadPLY.loadFromFile(file);
-        
-        const loadTime = ((performance.now() - startTime) / 1000).toFixed(2);
-        console.log(`Loaded ${plyData.vertexCount} vertices in ${loadTime} seconds`);
-        
-        // Set scene parameters if available
-        if (plyData.sceneCenter && plyData.sceneExtent) {
-          viewer.setSceneParameters(plyData.sceneCenter, plyData.sceneExtent);
-        }
-        
-        // Load the point cloud with octlevels for scaling
-        viewer.loadPointCloud(
-          plyData.vertices, 
-          plyData.sh0Values, 
-          plyData.octlevels, 
-          plyData.octpaths, 
-          plyData.gridValues,
-          plyData.shRestValues
-        );
-        
-        // Update info display to include octlevel range if available
-        let octlevelInfo = '';
-        if (plyData.octlevels && plyData.octlevels.length > 0) {
-          const minOct = plyData.octlevels.reduce((min, val) => val < min ? val : min, plyData.octlevels[0]);
-          const maxOct = plyData.octlevels.reduce((max, val) => val > max ? val : max, plyData.octlevels[0]);
-          octlevelInfo = `\nOctlevels: ${minOct} to ${maxOct}`;
-        }
-        
-        infoElement!.textContent = `Loaded: ${file.name}
-          Vertices: ${plyData.vertexCount.toLocaleString()}
-          Size: ${(file.size / (1024 * 1024)).toFixed(2)} MB
-          Load time: ${loadTime}s${octlevelInfo}`;
-        
-        // Adjust camera to fit the point cloud based on scene center and extent
-        if (plyData.sceneCenter && plyData.sceneExtent) {
-          // Use the scene extent to position the camera
-          const viewDistance = plyData.sceneExtent * 2;
-          
-          camera.setPosition(
-            plyData.sceneCenter[0], 
-            plyData.sceneCenter[1] + viewDistance * 0.5,  
-            plyData.sceneCenter[2] + viewDistance
-          );
-          
-          camera.setTarget(
-            plyData.sceneCenter[0], 
-            plyData.sceneCenter[1], 
-            plyData.sceneCenter[2]
-          );
-          
-        } else {
-          // Fallback to default positioning
-          camera.setPosition(0, 0, 5);
-          camera.setTarget(0, 0, 0);
-        }
-      } catch (error: any) {
-        infoElement!.textContent = `Error loading PLY: ${error.message}`;
-        console.error('PLY loading error:', error);
-      }
+      camera.setPosition(
+        plyData.sceneCenter[0], 
+        plyData.sceneCenter[1] + viewDistance * 0.5,  
+        plyData.sceneCenter[2] + viewDistance
+      );
+      
+      camera.setTarget(
+        plyData.sceneCenter[0], 
+        plyData.sceneCenter[1], 
+        plyData.sceneCenter[2]
+      );
+    } else {
+      camera.setPosition(0, 0, 5);
+      camera.setTarget(0, 0, 0);
+    }
+  };
+
+  // Helper function to load PLY data into viewer
+  const loadPLYData = (plyData: any, loadTime: string, fileName: string, fileSize?: number) => {
+    if (plyData.sceneCenter && plyData.sceneExtent) {
+      viewer.setSceneParameters(plyData.sceneCenter, plyData.sceneExtent);
+    }
+
+    viewer.loadPointCloud(
+      plyData.vertices, 
+      plyData.sh0Values, 
+      plyData.octlevels, 
+      plyData.octpaths, 
+      plyData.gridValues,
+      plyData.shRestValues
+    );
+
+    let octlevelInfo = '';
+    if (plyData.octlevels && plyData.octlevels.length > 0) {
+      const minOct = plyData.octlevels.reduce((min: number, val: number) => val < min ? val : min, plyData.octlevels[0]);
+      const maxOct = plyData.octlevels.reduce((max: number, val: number) => val > max ? val : max, plyData.octlevels[0]);
+      octlevelInfo = `\nOctlevels: ${minOct} to ${maxOct}`;
+    }
+
+    const sizeInfo = fileSize ? `\nSize: ${(fileSize / (1024 * 1024)).toFixed(2)} MB` : '';
+    infoElement.textContent = `Loaded: ${fileName}
+      Vertices: ${plyData.vertexCount.toLocaleString()}${sizeInfo}
+      Load time: ${loadTime}s${octlevelInfo}`;
+
+    updateCameraPosition(plyData);
+  };
+
+  // Handle file input with button click
+  fileButton.addEventListener('click', async () => {
+    if (!fileInput.files || fileInput.files.length === 0) {
+      alert('Please select a file first');
+      return;
+    }
+
+    const file = fileInput.files[0];
+    try {
+      fileButton.disabled = true;
+      fileButton.textContent = 'Loading...';
+      infoElement.textContent = 'Loading PLY file...';
+
+      const startTime = performance.now();
+      const plyData = await LoadPLY.loadFromFile(file);
+      const loadTime = ((performance.now() - startTime) / 1000).toFixed(2);
+      
+      loadPLYData(plyData, loadTime, file.name, file.size);
+    } catch (error: any) {
+      infoElement.textContent = `Error loading PLY: ${error.message}`;
+      console.error('PLY loading error:', error);
+    } finally {
+      fileButton.disabled = false;
+      fileButton.textContent = 'Load File';
     }
   });
-  
+
+  // Handle URL input
+  urlButton.addEventListener('click', async () => {
+    const url = urlInput.value.trim();
+    if (!url) {
+      alert('Please enter a URL');
+      return;
+    }
+
+    try {
+      urlButton.disabled = true;
+      urlButton.textContent = 'Loading...';
+      infoElement.textContent = 'Loading PLY from URL...';
+
+      const startTime = performance.now();
+      const plyData = await LoadPLY.loadFromUrl(url);
+      const loadTime = ((performance.now() - startTime) / 1000).toFixed(2);
+
+      const fileName = url.split('/').pop() || 'remote-ply';
+      loadPLYData(plyData, loadTime, fileName);
+    } catch (error: any) {
+      infoElement.textContent = `Error loading PLY: ${error.message}`;
+      console.error('PLY loading error:', error);
+    } finally {
+      urlButton.disabled = false;
+      urlButton.textContent = 'Load URL';
+    }
+  });
 }
