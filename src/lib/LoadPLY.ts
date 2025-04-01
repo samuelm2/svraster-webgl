@@ -176,7 +176,7 @@ export class LoadPLY {
     let restValues: Float32Array | undefined;
     
     if (hasRestValues) {
-      // Count how many f_rest properties are present (should be 24 from f_rest_0 to f_rest_23)
+      // Count how many f_rest properties are present (should be 9 from f_rest_0 to f_rest_8)
       const restCount = properties.filter(p => p.name.startsWith('f_rest_')).length;
       restValues = new Float32Array(vertexCount * restCount);
       console.log(`File has ${restCount} f_rest properties`);

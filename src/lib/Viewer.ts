@@ -113,6 +113,9 @@ export class Viewer {
   private sortTimeElement: HTMLElement | null = null;
   private lastSortTime: number = 0;
 
+  private isIntelGPU: boolean = false;
+  private customPixelRatio: number = 1.0;
+
   constructor(containerId: string) {
     // Create canvas element
     this.canvas = document.createElement('canvas');
@@ -149,6 +152,9 @@ export class Viewer {
     // Fix: Initialize last camera position using explicit array
     const pos = this.camera.getPosition();
     this.lastCameraPosition = [pos[0], pos[1], pos[2]]; 
+    
+    // Detect GPU vendor and set appropriate pixel ratio
+    this.detectGPUVendor();
     
     // Set initial size
     this.updateCanvasSize();
@@ -196,18 +202,46 @@ export class Viewer {
     gl.cullFace(gl.BACK);
   }
 
+  private detectGPUVendor(): void {
+    const gl = this.gl!;
+    const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+    
+    if (debugInfo) {
+      const renderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
+      console.log('GPU detected:', renderer);
+      
+      // Check if this is an Intel GPU
+      this.isIntelGPU = renderer.toLowerCase().includes('intel');
+      
+      if (this.isIntelGPU) {
+        console.log('Intel GPU detected - reducing resolution for better performance');
+        // Use a lower pixel ratio for Intel GPUs (0.75 = 75% of normal resolution)
+        this.customPixelRatio = 0.75;
+      } else {
+        // Use device pixel ratio for non-Intel GPUs, but cap it for high-DPI displays
+        this.customPixelRatio = Math.min(window.devicePixelRatio, 2.0);
+      }
+    }
+  }
+
   /**
    * Updates canvas size to match container dimensions
    */
   private updateCanvasSize(): void {
     // Get container dimensions (using getBoundingClientRect for true pixel dimensions)
     const rect = this.container.getBoundingClientRect();
-    const width = rect.width;
-    const height = rect.height;
     
-    // Set canvas dimensions to match container
+    // Apply custom pixel ratio
+    const width = Math.floor(rect.width * this.customPixelRatio);
+    const height = Math.floor(rect.height * this.customPixelRatio);
+    
+    // Set canvas dimensions while keeping display size
     this.canvas.width = width;
     this.canvas.height = height;
+    
+    // Make sure canvas still appears at the browser-reported size
+    this.canvas.style.width = `${rect.width}px`;
+    this.canvas.style.height = `${rect.height}px`;
     
     // Update camera aspect ratio
     this.camera.setAspectRatio(width / height);
