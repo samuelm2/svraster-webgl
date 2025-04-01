@@ -67,7 +67,7 @@ export class Viewer {
   // Add this property to the Viewer class
   private sceneTransformMatrix: Float32Array = new Float32Array([
     1, 0, 0, 0,   // First row
-    0, 1, 0, 0,  // Second row
+    0, -1, 0, 0,  // Second row - negate Y to flip the scene vertically
     0, 0, 1, 0,   // Third row
     0, 0, 0, 1    // Fourth row
   ]);
@@ -306,6 +306,9 @@ export class Viewer {
       vec3 evaluateSH(vec3 sh0, vec3 sh1_0, vec3 sh1_1, vec3 sh1_2, vec3 direction) {
         // Normalize direction vector
         vec3 dir = normalize(direction);
+
+        // TODO: Remove this once we have a proper coordinate system
+        dir.y = -dir.y;
         
         // SH0
         vec3 color = sh0 * 0.28209479177387814;
@@ -435,6 +438,10 @@ export class Viewer {
       float trilinearInterpolation(vec3 pos, vec3 boxMin, vec3 boxMax, vec4 density0, vec4 density1) {
         // Normalize position within the box [0,1]
         vec3 normPos = (pos - boxMin) / (boxMax - boxMin);
+        
+        // For Y axis, we need to invert the interpolation factor since our
+        // world coordinates are flipped (e.g., Y in shader is -Y in original data)
+        normPos.y = 1.0 - normPos.y;
         
         // Rest of corner mapping stays the same
         float c000 = density0.x; // Corner [0,0,0]
@@ -1190,6 +1197,17 @@ export class Viewer {
     // Clone positions to send to worker
     const positions = new Float32Array(this.originalPositions);
     
+    // Apply the scene transformation to the positions - flip Y axis
+    for (let i = 0; i < positions.length / 3; i++) {
+      // Extract position
+      const x = positions[i * 3];
+      const y = positions[i * 3 + 1];
+      const z = positions[i * 3 + 2];
+      
+      // Apply transformation (this just flips Y)
+      positions[i * 3 + 1] = -y;
+    }
+    
     // Create copies of octree data to send to worker
     let octlevels: Uint8Array | undefined = undefined;
     let octpaths: Uint32Array | undefined = undefined;
@@ -1289,14 +1307,77 @@ export class Viewer {
    * Orbit the camera around the target
    */
   private orbit(deltaX: number, deltaY: number): void {
-    this.camera.orbit(-deltaX, -deltaY, this.orbitSpeed);
+    const pos = this.camera.getPosition();
+    const target = this.camera.getTarget();
+    
+    // Calculate the camera's current position relative to the target
+    const relX = pos[0] - target[0];
+    const relY = pos[1] - target[1];
+    const relZ = pos[2] - target[2];
+    
+    // Calculate distance from target
+    const distance = Math.sqrt(relX * relX + relY * relY + relZ * relZ);
+    
+    // Calculate current spherical coordinates
+    let theta = Math.atan2(relX, relZ);
+    let phi = Math.acos(relY / distance);
+    
+    // Update angles based on mouse movement - revert back to original approach
+    theta -= deltaX * this.orbitSpeed;
+    phi = Math.max(0.1, Math.min(Math.PI - 0.1, phi + deltaY * this.orbitSpeed)); // Back to original plus sign
+    
+    // Convert back to Cartesian coordinates
+    const newRelX = distance * Math.sin(phi) * Math.sin(theta);
+    const newRelY = distance * Math.cos(phi);
+    const newRelZ = distance * Math.sin(phi) * Math.cos(theta);
+    
+    // Update camera position
+    this.camera.setPosition(
+      target[0] + newRelX,
+      target[1] + newRelY,
+      target[2] + newRelZ
+    );
   }
   
   /**
    * Pan the camera (move target and camera together)
    */
   private pan(deltaX: number, deltaY: number): void {
-    this.camera.pan(-deltaX, -deltaY, this.panSpeed);
+    const pos = this.camera.getPosition();
+    const target = this.camera.getTarget();
+    
+    // Calculate forward vector (from camera to target)
+    const forwardX = target[0] - pos[0];
+    const forwardY = target[1] - pos[1];
+    const forwardZ = target[2] - pos[2];
+    const forwardLength = Math.sqrt(forwardX * forwardX + forwardY * forwardY + forwardZ * forwardZ);
+    
+    // Normalize forward vector
+    const forwardNormX = forwardX / forwardLength;
+    const forwardNormY = forwardY / forwardLength;
+    const forwardNormZ = forwardZ / forwardLength;
+    
+    // Calculate right vector (cross product of forward and up)
+    // Back to original up vector
+    const upX = 0, upY = 1, upZ = 0; // Standard world up vector
+    const rightX = forwardNormZ * upY - forwardNormY * upZ;
+    const rightY = forwardNormX * upZ - forwardNormZ * upX;
+    const rightZ = forwardNormY * upX - forwardNormX * upY;
+    
+    // Calculate normalized up vector (cross product of right and forward)
+    const upNormX = rightY * forwardNormZ - rightZ * forwardNormY;
+    const upNormY = rightZ * forwardNormX - rightX * forwardNormZ;
+    const upNormZ = rightX * forwardNormY - rightY * forwardNormX;
+    
+    // Calculate pan amounts based on delta
+    const panAmount = this.panSpeed * Math.max(1, forwardLength / 10);
+    const panX = -(rightX * -deltaX + upNormX * deltaY) * panAmount;
+    const panY = -(rightY * -deltaX + upNormY * deltaY) * panAmount;
+    const panZ = -(rightZ * -deltaX + upNormZ * deltaY) * panAmount;
+    
+    // Move both camera and target
+    this.camera.setPosition(pos[0] + panX, pos[1] + panY, pos[2] + panZ);
+    this.camera.setTarget(target[0] + panX, target[1] + panY, target[2] + panZ);
   }
   
   /**
