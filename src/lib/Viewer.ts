@@ -68,7 +68,7 @@ export class Viewer {
   private sceneTransformMatrix: Float32Array = new Float32Array([
     1, 0, 0, 0,   // First row
     0, -1, 0, 0,  // Second row - negate Y to flip the scene vertically
-    0, 0, 1, 0,   // Third row
+    0, 0, -1, 0,   // Third row
     0, 0, 0, 1    // Fourth row
   ]);
   
@@ -268,6 +268,7 @@ export class Viewer {
       uniform mat4 uProjectionMatrix;
       uniform mat4 uViewMatrix;
       uniform mat4 uSceneTransformMatrix;
+      uniform mat4 uInverseTransformMatrix;
       uniform vec3 uCameraPosition;
 
       // Uniforms for textures
@@ -302,14 +303,16 @@ export class Viewer {
         return texture(tex, coord);
       }
 
-      // Spherical Harmonics evaluation with full 9 coefficients
+      // Modified SH evaluation with proper transform handling
       vec3 evaluateSH(vec3 sh0, vec3 sh1_0, vec3 sh1_1, vec3 sh1_2, vec3 direction) {
-        // Normalize direction vector
-        vec3 dir = normalize(direction);
-
-        // TODO: Remove this once we have a proper coordinate system
-        dir.y = -dir.y;
+        // Transform the direction vector using the inverse transform matrix
+        // This handles rotations correctly in the shader space
+        vec4 transformedDir = uInverseTransformMatrix * vec4(direction, 0.0);
         
+        // Normalize the transformed direction
+        vec3 dir = normalize(transformedDir.xyz);
+        
+        // Rest of the SH evaluation remains the same
         // SH0
         vec3 color = sh0 * 0.28209479177387814;
         
@@ -382,7 +385,7 @@ export class Viewer {
         // Pass scale to fragment shader
         vScale = instanceScale;
         
-        // Calculate viewing direction from voxel center to camera
+        // Calculate viewing direction from voxel center to camera in world space
         vec3 viewDir = normalize(vVoxelCenter - uCameraPosition);
         
         // Calculate color using SH and pass to fragment shader
@@ -408,6 +411,7 @@ export class Viewer {
       
       uniform vec3 uCameraPosition;
       uniform mat4 uViewMatrix;
+      uniform mat4 uInverseTransformMatrix;
       
       out vec4 fragColor;
       
@@ -434,16 +438,36 @@ export class Viewer {
         return vec2(tNear, tFar);
       }
       
-      // Updated trilinear interpolation function
+      // Modified trilinear interpolation for arbitrary transforms
       float trilinearInterpolation(vec3 pos, vec3 boxMin, vec3 boxMax, vec4 density0, vec4 density1) {
-        // Normalize position within the box [0,1]
-        vec3 normPos = (pos - boxMin) / (boxMax - boxMin);
+        // Calculate the size of the box
+        vec3 boxSize = boxMax - boxMin;
         
-        // For Y axis, we need to invert the interpolation factor since our
-        // world coordinates are flipped (e.g., Y in shader is -Y in original data)
-        normPos.y = 1.0 - normPos.y;
+        // First, transform the sample position back to the original data space
+        // 1. Convert the position to a normalized position in the box [0,1]
+        vec3 normalizedPos = (pos - boxMin) / boxSize;
         
-        // Rest of corner mapping stays the same
+        // 2. Convert to box-local coordinates [-0.5, 0.5]
+        vec3 localPos = normalizedPos - 0.5;
+        
+        // 3. Transform this position back to the original data space using inverse transform
+        vec4 originalLocalPos = uInverseTransformMatrix * vec4(localPos, 0.0);
+        
+        // 4. Convert back to normalized [0,1] range
+        vec3 originalNormalizedPos = originalLocalPos.xyz + 0.5;
+        
+        // 5. Clamp to ensure we're in the valid range [0,1]
+        originalNormalizedPos = clamp(originalNormalizedPos, 0.0, 1.0);
+        
+        // Now use these coordinates to sample the grid values in their original orientation
+        float fx = originalNormalizedPos.x;
+        float fy = originalNormalizedPos.y;
+        float fz = originalNormalizedPos.z;
+        float fx1 = 1.0 - fx;
+        float fy1 = 1.0 - fy;
+        float fz1 = 1.0 - fz;
+        
+        // Standard grid corner ordering
         float c000 = density0.x; // Corner [0,0,0]
         float c001 = density0.y; // Corner [0,0,1]
         float c010 = density0.z; // Corner [0,1,0]
@@ -453,26 +477,16 @@ export class Viewer {
         float c110 = density1.z; // Corner [1,1,0]
         float c111 = density1.w; // Corner [1,1,1]
         
-        // Linear interpolation factors
-        float fx = normPos.x;
-        float fy = normPos.y;
-        float fz = normPos.z;
-        float fx1 = 1.0 - fx;
-        float fy1 = 1.0 - fy;
-        float fz1 = 1.0 - fz;
+        // Trilinear interpolation using original-space coordinates
+        float c00 = fx1 * c000 + fx * c100;
+        float c01 = fx1 * c001 + fx * c101;
+        float c10 = fx1 * c010 + fx * c110;
+        float c11 = fx1 * c011 + fx * c111;
         
-        // First interpolate along x axis
-        float c00 = fx1 * c000 + fx * c100; // Edge [0,0,0] to [1,0,0]
-        float c01 = fx1 * c001 + fx * c101; // Edge [0,0,1] to [1,0,1]
-        float c10 = fx1 * c010 + fx * c110; // Edge [0,1,0] to [1,1,0]
-        float c11 = fx1 * c011 + fx * c111; // Edge [0,1,1] to [1,1,1]
+        float c0 = fy1 * c00 + fy * c10;
+        float c1 = fy1 * c01 + fy * c11;
         
-        // Then interpolate along y axis
-        float c0 = fy1 * c00 + fy * c10; // Edge [x,0,0] to [x,1,0]
-        float c1 = fy1 * c01 + fy * c11; // Edge [x,0,1] to [x,1,1]
-        
-        // Finally interpolate along z axis
-        return fz1 * c0 + fz * c1; // Edge [x,y,0] to [x,y,1]
+        return fz1 * c0 + fz * c1;
       }
       
       float explin(float x) {
@@ -806,16 +820,21 @@ export class Viewer {
       return;
     }
     
+    // Calculate the inverse transform matrix
+    const inverseTransformMatrix = this.getInverseTransformMatrix();
+    
     // Set uniforms with camera matrices
     const projectionMatrixLocation = gl.getUniformLocation(this.program, 'uProjectionMatrix');
     const viewMatrixLocation = gl.getUniformLocation(this.program, 'uViewMatrix');
     const sceneTransformMatrixLocation = gl.getUniformLocation(this.program, 'uSceneTransformMatrix');
+    const inverseTransformMatrixLocation = gl.getUniformLocation(this.program, 'uInverseTransformMatrix');
     const cameraPositionLocation = gl.getUniformLocation(this.program, 'uCameraPosition');
     
     // Pass matrices to shader
     gl.uniformMatrix4fv(projectionMatrixLocation, false, this.camera.getProjectionMatrix());
     gl.uniformMatrix4fv(viewMatrixLocation, false, this.camera.getViewMatrix());
     gl.uniformMatrix4fv(sceneTransformMatrixLocation, false, this.sceneTransformMatrix);
+    gl.uniformMatrix4fv(inverseTransformMatrixLocation, false, inverseTransformMatrix);
     
     // Pass camera position to the shader
     gl.uniform3f(cameraPositionLocation, cameraPos[0], cameraPos[1], cameraPos[2]);
@@ -1197,17 +1216,6 @@ export class Viewer {
     // Clone positions to send to worker
     const positions = new Float32Array(this.originalPositions);
     
-    // Apply the scene transformation to the positions - flip Y axis
-    for (let i = 0; i < positions.length / 3; i++) {
-      // Extract position
-      const x = positions[i * 3];
-      const y = positions[i * 3 + 1];
-      const z = positions[i * 3 + 2];
-      
-      // Apply transformation (this just flips Y)
-      positions[i * 3 + 1] = -y;
-    }
-    
     // Create copies of octree data to send to worker
     let octlevels: Uint8Array | undefined = undefined;
     let octpaths: Uint32Array | undefined = undefined;
@@ -1215,14 +1223,14 @@ export class Viewer {
     // Use the original octree data if available
     if (this.originalOctlevels) {
       octlevels = new Uint8Array(this.originalOctlevels);
-      console.log(`Sending ${octlevels.length} octlevels to sort worker`);
     }
     
     if (this.originalOctpaths) {
       octpaths = new Uint32Array(this.originalOctpaths);
-      console.log(`Sending ${octpaths.length} octpaths to sort worker`);
     }
     
+    // Create a copy of the scene transform matrix
+    const transformMatrix = new Float32Array(this.sceneTransformMatrix);
     
     // Send the data to the worker
     this.sortWorker.postMessage({
@@ -1230,6 +1238,7 @@ export class Viewer {
       positions: positions,
       cameraPosition: cameraPos,
       cameraTarget: cameraTarget,
+      sceneTransformMatrix: transformMatrix,
       octlevels: octlevels,
       octpaths: octpaths
     }, [positions.buffer]);
@@ -1242,6 +1251,8 @@ export class Viewer {
     if (octpaths) {
       this.sortWorker.postMessage({}, [octpaths.buffer]);
     }
+    
+    this.sortWorker.postMessage({}, [transformMatrix.buffer]);
   }
 
 
@@ -1584,5 +1595,143 @@ export class Viewer {
     
     // Append container to document
     document.body.appendChild(perfContainer);
+  }
+
+  // Add this method to Viewer class
+  public setSceneTransformMatrix(matrix: Float32Array | number[]): void {
+    if (matrix.length !== 16) {
+      throw new Error('Transform matrix must be a 4x4 matrix with 16 elements');
+    }
+    
+    // Create a new Float32Array from the input
+    this.sceneTransformMatrix = new Float32Array(matrix);
+    
+    // Request a resort to update the view with the new transform
+    this.requestSort();
+  }
+
+  // Add this method to get the inverse transform matrix for use in direction calculations
+  private getInverseTransformMatrix(): Float32Array {
+    // Create a new array for the inverse
+    const inverse = new Float32Array(16);
+    
+    // This is a simplified version assuming only rotation/reflection
+    // For a full 4x4 matrix inverse, you would need a more complex calculation
+    
+    // For a rotation/reflection matrix, the transpose is the inverse
+    // Copy transposed 3x3 part (ignoring translation)
+    inverse[0] = this.sceneTransformMatrix[0];  // m11
+    inverse[1] = this.sceneTransformMatrix[4];  // m21
+    inverse[2] = this.sceneTransformMatrix[8];  // m31
+    inverse[4] = this.sceneTransformMatrix[1];  // m12
+    inverse[5] = this.sceneTransformMatrix[5];  // m22
+    inverse[6] = this.sceneTransformMatrix[9];  // m32
+    inverse[8] = this.sceneTransformMatrix[2];  // m13
+    inverse[9] = this.sceneTransformMatrix[6];  // m23
+    inverse[10] = this.sceneTransformMatrix[10]; // m33
+    
+    // Set the rest of the matrix properly
+    inverse[3] = 0;
+    inverse[7] = 0;
+    inverse[11] = 0;
+    inverse[15] = 1;
+    
+    // Handle translation part
+    inverse[12] = -(inverse[0] * this.sceneTransformMatrix[12] + 
+                   inverse[4] * this.sceneTransformMatrix[13] + 
+                   inverse[8] * this.sceneTransformMatrix[14]);
+    inverse[13] = -(inverse[1] * this.sceneTransformMatrix[12] + 
+                   inverse[5] * this.sceneTransformMatrix[13] + 
+                   inverse[9] * this.sceneTransformMatrix[14]);
+    inverse[14] = -(inverse[2] * this.sceneTransformMatrix[12] + 
+                   inverse[6] * this.sceneTransformMatrix[13] + 
+                   inverse[10] * this.sceneTransformMatrix[14]);
+    
+    return inverse;
+  }
+
+  // Add these utility methods to the Viewer class
+
+  /**
+   * Creates a rotation matrix around the X-axis
+   * @param angle Rotation angle in radians
+   * @returns 4x4 transformation matrix as Float32Array
+   */
+  public static createRotationXMatrix(angle: number): Float32Array {
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    return new Float32Array([
+      1, 0, 0, 0,
+      0, cos, sin, 0,
+      0, -sin, cos, 0,
+      0, 0, 0, 1
+    ]);
+  }
+
+  /**
+   * Creates a rotation matrix around the Y-axis
+   * @param angle Rotation angle in radians
+   * @returns 4x4 transformation matrix as Float32Array
+   */
+  public static createRotationYMatrix(angle: number): Float32Array {
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    return new Float32Array([
+      cos, 0, -sin, 0,
+      0, 1, 0, 0,
+      sin, 0, cos, 0,
+      0, 0, 0, 1
+    ]);
+  }
+
+  /**
+   * Creates a rotation matrix around the Z-axis
+   * @param angle Rotation angle in radians
+   * @returns 4x4 transformation matrix as Float32Array
+   */
+  public static createRotationZMatrix(angle: number): Float32Array {
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    return new Float32Array([
+      cos, sin, 0, 0,
+      -sin, cos, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1
+    ]);
+  }
+
+  /**
+   * Creates the standard Y-flip matrix (default transform)
+   * @returns 4x4 transformation matrix as Float32Array
+   */
+  public static createYFlipMatrix(): Float32Array {
+    return new Float32Array([
+      1, 0, 0, 0,
+      0, -1, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1
+    ]);
+  }
+
+  /**
+   * Multiplies two 4x4 matrices
+   * @param a First matrix
+   * @param b Second matrix
+   * @returns Result of a * b as Float32Array
+   */
+  public static multiplyMatrices(a: Float32Array, b: Float32Array): Float32Array {
+    const result = new Float32Array(16);
+    
+    for (let i = 0; i < 4; i++) {
+      for (let j = 0; j < 4; j++) {
+        let sum = 0;
+        for (let k = 0; k < 4; k++) {
+          sum += a[i * 4 + k] * b[k * 4 + j];
+        }
+        result[i * 4 + j] = sum;
+      }
+    }
+    
+    return result;
   }
 }
