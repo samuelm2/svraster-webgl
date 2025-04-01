@@ -379,8 +379,11 @@ export class Viewer {
       
       // Ray-box intersection function - returns entry and exit t values
       vec2 rayBoxIntersection(vec3 rayOrigin, vec3 rayDir, vec3 boxCenter, float boxScale) {
-        vec3 boxMin = boxCenter - vec3(boxScale * 0.5);
-        vec3 boxMax = boxCenter + vec3(boxScale * 0.5);
+        const float EPSILON = 1e-3;
+        
+        // Slightly expand the box to handle boundary cases
+        vec3 boxMin = boxCenter - vec3(boxScale * 0.5) - vec3(EPSILON);
+        vec3 boxMax = boxCenter + vec3(boxScale * 0.5) + vec3(EPSILON);
         
         vec3 invDir = 1.0 / rayDir;
         vec3 tMin = (boxMin - rayOrigin) * invDir;
