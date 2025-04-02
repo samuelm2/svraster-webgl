@@ -27,17 +27,12 @@ export class Viewer {
   
   // Camera
   private camera: Camera;
-  
-  // Animation
-  private lastFrameTime: number = 0;
-  
-  // Rendering flags
 
   // Scene properties for scaling calculation
 
   private baseVoxelSize: number = 0.01;
   
-  private lastCameraPosition: [number, number, number] = [0, 0, 0];
+  private lastCameraPosition: vec3 = vec3.create();
   private resortThreshold: number = 0.1; // Threshold for camera movement to trigger resort
   
   // Add these properties to the Viewer class definition at the top
@@ -54,7 +49,6 @@ export class Viewer {
   private originalOctlevels: Uint8Array | null = null;
   private originalOctpaths: Uint32Array | null = null;
   
-  // Add a flag for this debug feature
   
   // Add these properties to the Viewer class definition at the top
   private isDragging: boolean = false;
@@ -96,7 +90,6 @@ export class Viewer {
   private shWidth: number = 0;
   private shHeight: number = 0;
 
-
   private fpsUpdateInterval: number = 500; // Update FPS display every 500ms
   private lastFpsUpdateTime: number = 0;
   private fpsElement: HTMLElement | null = null;
@@ -135,7 +128,7 @@ export class Viewer {
     // Set canvas to fill container completely
     this.canvas.style.width = '100vw';
     this.canvas.style.height = '100vh';
-    this.canvas.style.display = 'block'; // Remove any extra space beneath the canvas
+    this.canvas.style.display = 'block';
     
     // Append to container
     this.container.appendChild(this.canvas);
@@ -152,12 +145,12 @@ export class Viewer {
     
     // Initialize camera - revert to original positive Z position
     this.camera = new Camera();
-    this.camera.setPosition(0, 0, 1); // Back to positive Z
-    this.camera.setTarget(0, 0, 0);    // Still look at origin
+    this.camera.setPosition(0, 0, 1);
+    this.camera.setTarget(0, 0, 0);
     
-    // Fix: Initialize last camera position using explicit array
+    // Get camera position and copy it to lastCameraPosition
     const pos = this.camera.getPosition();
-    this.lastCameraPosition = [pos[0], pos[1], pos[2]]; 
+    vec3.set(this.lastCameraPosition, pos[0], pos[1], pos[2]);
     
     // Detect GPU vendor and set appropriate pixel ratio
     this.detectGPUVendor();
@@ -806,13 +799,16 @@ export class Viewer {
     
     // Check if camera has moved enough to trigger a resort
     const cameraPos = this.camera.getPosition();
-    const dx = cameraPos[0] - this.lastCameraPosition[0];
-    const dy = cameraPos[1] - this.lastCameraPosition[1];
-    const dz = cameraPos[2] - this.lastCameraPosition[2];
-    const cameraMoveDistance = Math.sqrt(dx*dx + dy*dy + dz*dz);
-    
+
+    // Use vec3.distance for a cleaner distance calculation
+    const cameraMoveDistance = vec3.distance(
+      this.lastCameraPosition,
+      vec3.fromValues(cameraPos[0], cameraPos[1], cameraPos[2])
+    );
+
     if (cameraMoveDistance > this.resortThreshold && !this.pendingSortRequest) {
-      this.lastCameraPosition = [cameraPos[0], cameraPos[1], cameraPos[2]];
+      // Update lastCameraPosition with current position
+      vec3.set(this.lastCameraPosition, cameraPos[0], cameraPos[1], cameraPos[2]);
       this.requestSort();
     }
     
@@ -825,8 +821,6 @@ export class Viewer {
     // gl.clearColor(1.0 / 255.0, 121.0 / 255.0, 51.0 / 255.0, 1.0); 
     gl.clearColor(0.0, 0.0, 0.0, 1.0);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    
-
 
     // Use our shader program
     gl.useProgram(this.program);
@@ -1004,7 +998,6 @@ export class Viewer {
     console.log(`Grid values check: Has values != 1.0: ${hasNonOneValues}, Min: ${minVal}, Max: ${maxVal}`);
     console.log(`First few grid values:`, gridValues.slice(0, 24));
     
-    // Use original, non-swapped grid values order - this will work with our shader fix
     for (let i = 0; i < positions.length / 3; i++) {
       // First 4 corners in density0 (following the specified ordering)
       this.originalGridValues1[i * 4 + 0] = gridValues[i * 8 + 0]; // Corner [0,0,0]
