@@ -3,6 +3,7 @@
  * Specialized for binary PLY point cloud visualization
  */
 import { Camera } from './Camera';
+import { mat4, vec3 } from 'gl-matrix';
 
 enum TextureType {
   MainAttributes,
@@ -65,12 +66,12 @@ export class Viewer {
   private zoomSpeed: number = 0.1;
   
   // Add this property to the Viewer class
-  private sceneTransformMatrix: Float32Array = new Float32Array([
+  private sceneTransformMatrix: mat4 = mat4.fromValues(
     1, 0, 0, 0,   // First row
-    0, -1, 0, 0,  // Second row - negate Y to flip the scene vertically
+    0, -1, 0, 0,  // Second row
     0, 0, -1, 0,   // Third row
     0, 0, 0, 1    // Fourth row
-  ]);
+  );
   
   // Add these properties to the Viewer class
 
@@ -1321,21 +1322,24 @@ export class Viewer {
     const pos = this.camera.getPosition();
     const target = this.camera.getTarget();
     
+    // Create vec3 objects from camera position and target
+    const position = vec3.fromValues(pos[0], pos[1], pos[2]);
+    const targetVec = vec3.fromValues(target[0], target[1], target[2]);
+    
     // Calculate the camera's current position relative to the target
-    const relX = pos[0] - target[0];
-    const relY = pos[1] - target[1];
-    const relZ = pos[2] - target[2];
+    const eyeDir = vec3.create();
+    vec3.subtract(eyeDir, position, targetVec);
     
     // Calculate distance from target
-    const distance = Math.sqrt(relX * relX + relY * relY + relZ * relZ);
+    const distance = vec3.length(eyeDir);
     
     // Calculate current spherical coordinates
-    let theta = Math.atan2(relX, relZ);
-    let phi = Math.acos(relY / distance);
+    let theta = Math.atan2(eyeDir[0], eyeDir[2]);
+    let phi = Math.acos(eyeDir[1] / distance);
     
-    // Update angles based on mouse movement - revert back to original approach
+    // Update angles based on mouse movement
     theta -= deltaX * this.orbitSpeed;
-    phi = Math.max(0.1, Math.min(Math.PI - 0.1, phi + deltaY * this.orbitSpeed)); // Back to original plus sign
+    phi = Math.max(0.1, Math.min(Math.PI - 0.1, phi + deltaY * this.orbitSpeed));
     
     // Convert back to Cartesian coordinates
     const newRelX = distance * Math.sin(phi) * Math.sin(theta);
@@ -1603,8 +1607,8 @@ export class Viewer {
       throw new Error('Transform matrix must be a 4x4 matrix with 16 elements');
     }
     
-    // Create a new Float32Array from the input
-    this.sceneTransformMatrix = new Float32Array(matrix);
+    // Create a new mat4 from the input
+    mat4.copy(this.sceneTransformMatrix, matrix as Float32Array);
     
     // Request a resort to update the view with the new transform
     this.requestSort();
@@ -1612,126 +1616,13 @@ export class Viewer {
 
   // Add this method to get the inverse transform matrix for use in direction calculations
   private getInverseTransformMatrix(): Float32Array {
-    // Create a new array for the inverse
-    const inverse = new Float32Array(16);
+    // Create a new matrix to store the inverse
+    const inverse = mat4.create();
     
-    // This is a simplified version assuming only rotation/reflection
-    // For a full 4x4 matrix inverse, you would need a more complex calculation
+    // Calculate the inverse of the scene transform matrix
+    mat4.invert(inverse, this.sceneTransformMatrix);
     
-    // For a rotation/reflection matrix, the transpose is the inverse
-    // Copy transposed 3x3 part (ignoring translation)
-    inverse[0] = this.sceneTransformMatrix[0];  // m11
-    inverse[1] = this.sceneTransformMatrix[4];  // m21
-    inverse[2] = this.sceneTransformMatrix[8];  // m31
-    inverse[4] = this.sceneTransformMatrix[1];  // m12
-    inverse[5] = this.sceneTransformMatrix[5];  // m22
-    inverse[6] = this.sceneTransformMatrix[9];  // m32
-    inverse[8] = this.sceneTransformMatrix[2];  // m13
-    inverse[9] = this.sceneTransformMatrix[6];  // m23
-    inverse[10] = this.sceneTransformMatrix[10]; // m33
-    
-    // Set the rest of the matrix properly
-    inverse[3] = 0;
-    inverse[7] = 0;
-    inverse[11] = 0;
-    inverse[15] = 1;
-    
-    // Handle translation part
-    inverse[12] = -(inverse[0] * this.sceneTransformMatrix[12] + 
-                   inverse[4] * this.sceneTransformMatrix[13] + 
-                   inverse[8] * this.sceneTransformMatrix[14]);
-    inverse[13] = -(inverse[1] * this.sceneTransformMatrix[12] + 
-                   inverse[5] * this.sceneTransformMatrix[13] + 
-                   inverse[9] * this.sceneTransformMatrix[14]);
-    inverse[14] = -(inverse[2] * this.sceneTransformMatrix[12] + 
-                   inverse[6] * this.sceneTransformMatrix[13] + 
-                   inverse[10] * this.sceneTransformMatrix[14]);
-    
-    return inverse;
-  }
-
-  // Add these utility methods to the Viewer class
-
-  /**
-   * Creates a rotation matrix around the X-axis
-   * @param angle Rotation angle in radians
-   * @returns 4x4 transformation matrix as Float32Array
-   */
-  public static createRotationXMatrix(angle: number): Float32Array {
-    const cos = Math.cos(angle);
-    const sin = Math.sin(angle);
-    return new Float32Array([
-      1, 0, 0, 0,
-      0, cos, sin, 0,
-      0, -sin, cos, 0,
-      0, 0, 0, 1
-    ]);
-  }
-
-  /**
-   * Creates a rotation matrix around the Y-axis
-   * @param angle Rotation angle in radians
-   * @returns 4x4 transformation matrix as Float32Array
-   */
-  public static createRotationYMatrix(angle: number): Float32Array {
-    const cos = Math.cos(angle);
-    const sin = Math.sin(angle);
-    return new Float32Array([
-      cos, 0, -sin, 0,
-      0, 1, 0, 0,
-      sin, 0, cos, 0,
-      0, 0, 0, 1
-    ]);
-  }
-
-  /**
-   * Creates a rotation matrix around the Z-axis
-   * @param angle Rotation angle in radians
-   * @returns 4x4 transformation matrix as Float32Array
-   */
-  public static createRotationZMatrix(angle: number): Float32Array {
-    const cos = Math.cos(angle);
-    const sin = Math.sin(angle);
-    return new Float32Array([
-      cos, sin, 0, 0,
-      -sin, cos, 0, 0,
-      0, 0, 1, 0,
-      0, 0, 0, 1
-    ]);
-  }
-
-  /**
-   * Creates the standard Y-flip matrix (default transform)
-   * @returns 4x4 transformation matrix as Float32Array
-   */
-  public static createYFlipMatrix(): Float32Array {
-    return new Float32Array([
-      1, 0, 0, 0,
-      0, -1, 0, 0,
-      0, 0, 1, 0,
-      0, 0, 0, 1
-    ]);
-  }
-
-  /**
-   * Multiplies two 4x4 matrices
-   * @param a First matrix
-   * @param b Second matrix
-   * @returns Result of a * b as Float32Array
-   */
-  public static multiplyMatrices(a: Float32Array, b: Float32Array): Float32Array {
-    const result = new Float32Array(16);
-    
-    for (let i = 0; i < 4; i++) {
-      for (let j = 0; j < 4; j++) {
-        let sum = 0;
-        for (let k = 0; k < 4; k++) {
-          sum += a[i * 4 + k] * b[k * 4 + j];
-        }
-        result[i * 4 + j] = sum;
-      }
-    }
-    
-    return result;
+    // Return as Float32Array for WebGL
+    return inverse as Float32Array;
   }
 }
