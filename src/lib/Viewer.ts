@@ -117,6 +117,11 @@ export class Viewer {
   private isIntelGPU: boolean = false;
   private customPixelRatio: number = 1.0;
 
+  // Add these properties to the class
+  private touchStartPositions: { [key: number]: { x: number; y: number } } = {};
+  private lastTouchDistance: number = 0;
+  private isTouchOrbit: boolean = false;
+
   constructor(containerId: string) {
     // Create canvas element
     this.canvas = document.createElement('canvas');
@@ -1342,6 +1347,97 @@ export class Viewer {
     // Prevent context menu on right click
     this.canvas.addEventListener('contextmenu', (event) => {
       event.preventDefault();
+    });
+
+    // Add touch event listeners
+    this.canvas.addEventListener('touchstart', (event: TouchEvent) => {
+        event.preventDefault();
+        
+        // Reset touch state
+        this.isTouchOrbit = false;
+        
+        // Store initial touch positions
+        for (let i = 0; i < event.touches.length; i++) {
+            const touch = event.touches[i];
+            this.touchStartPositions[touch.identifier] = {
+                x: touch.clientX,
+                y: touch.clientY
+            };
+        }
+        
+        if (event.touches.length === 1) {
+            // Single touch = orbit
+            this.isTouchOrbit = true;
+            this.lastMouseX = event.touches[0].clientX;
+            this.lastMouseY = event.touches[0].clientY;
+        } else if (event.touches.length === 2) {
+            // Two finger touch - initialize for both zoom and pan
+            const touch1 = event.touches[0];
+            const touch2 = event.touches[1];
+            this.lastTouchDistance = Math.hypot(
+                touch2.clientX - touch1.clientX,
+                touch2.clientY - touch1.clientY
+            );
+            this.lastMouseX = (touch1.clientX + touch2.clientX) / 2;
+            this.lastMouseY = (touch1.clientY + touch2.clientY) / 2;
+        }
+    });
+
+    this.canvas.addEventListener('touchmove', (event: TouchEvent) => {
+        event.preventDefault();
+        
+        if (event.touches.length === 1 && this.isTouchOrbit) {
+            // Single touch orbit
+            const touch = event.touches[0];
+            const deltaX = touch.clientX - this.lastMouseX;
+            const deltaY = touch.clientY - this.lastMouseY;
+            
+            this.orbit(deltaX, -deltaY);
+            
+            this.lastMouseX = touch.clientX;
+            this.lastMouseY = touch.clientY;
+        } else if (event.touches.length === 2) {
+            const touch1 = event.touches[0];
+            const touch2 = event.touches[1];
+            
+            // Calculate new touch distance for zoom
+            const newTouchDistance = Math.hypot(
+                touch2.clientX - touch1.clientX,
+                touch2.clientY - touch1.clientY
+            );
+            
+            // Calculate center point of the two touches
+            const centerX = (touch1.clientX + touch2.clientX) / 2;
+            const centerY = (touch1.clientY + touch2.clientY) / 2;
+            
+            // Handle both zoom and pan simultaneously
+            // Handle zoom
+            const zoomDelta = (this.lastTouchDistance - newTouchDistance) * 0.01;
+            this.zoom(zoomDelta);
+            
+            // Handle pan
+            const deltaX = centerX - this.lastMouseX;
+            const deltaY = centerY - this.lastMouseY;
+            this.pan(deltaX, deltaY);
+            
+            this.lastTouchDistance = newTouchDistance;
+            this.lastMouseX = centerX;
+            this.lastMouseY = centerY;
+        }
+    });
+
+    this.canvas.addEventListener('touchend', (event: TouchEvent) => {
+        event.preventDefault();
+        
+        // Remove ended touches from tracking
+        for (let i = 0; i < event.changedTouches.length; i++) {
+            delete this.touchStartPositions[event.changedTouches[i].identifier];
+        }
+        
+        // Reset state if no touches remain
+        if (event.touches.length === 0) {
+            this.isTouchOrbit = false;
+        }
     });
   }
   
