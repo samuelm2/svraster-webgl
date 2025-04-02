@@ -459,6 +459,10 @@ export class Viewer {
       
       // Modified trilinear interpolation for arbitrary transforms
       float trilinearInterpolation(vec3 pos, vec3 boxMin, vec3 boxMax, vec4 density0, vec4 density1) {
+
+        // TODO: This is very unoptimized. Need to optimize this so we don't have to transform the position
+        // back and forth between different spaces.
+        
         // Calculate the size of the box
         vec3 boxSize = boxMax - boxMin;
         
