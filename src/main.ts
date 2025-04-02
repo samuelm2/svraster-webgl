@@ -3,7 +3,74 @@ import { Viewer } from './lib/Viewer';
 import { Camera } from './lib/Camera';
 import { LoadPLY } from './lib/LoadPLY';
 
-document.addEventListener('DOMContentLoaded', () => {
+// Add these at the top of the file, after imports
+let progressContainer: HTMLDivElement;
+let progressBarInner: HTMLDivElement;
+let progressText: HTMLDivElement;
+
+// Create a function to initialize the progress bar
+function createProgressBar() {
+  progressContainer = document.createElement('div');
+  progressContainer.style.position = 'absolute';
+  progressContainer.style.top = '50%';
+  progressContainer.style.left = '50%';
+  progressContainer.style.transform = 'translate(-50%, -50%)';
+  progressContainer.style.padding = '20px';
+  progressContainer.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+  progressContainer.style.color = 'white';
+  progressContainer.style.fontFamily = 'sans-serif';
+  progressContainer.style.borderRadius = '10px';
+  progressContainer.style.textAlign = 'center';
+  progressContainer.style.display = 'none';
+
+  progressText = document.createElement('div');
+  progressText.style.marginBottom = '10px';
+  progressText.textContent = 'Loading PLY file...';
+
+  const progressBarOuter = document.createElement('div');
+  progressBarOuter.style.width = '200px';
+  progressBarOuter.style.height = '20px';
+  progressBarOuter.style.backgroundColor = 'rgba(255, 255, 255, 0.2)';
+  progressBarOuter.style.borderRadius = '10px';
+  progressBarOuter.style.overflow = 'hidden';
+
+  progressBarInner = document.createElement('div');
+  progressBarInner.style.width = '0%';
+  progressBarInner.style.height = '100%';
+  progressBarInner.style.backgroundColor = '#4CAF50';
+
+  progressBarOuter.appendChild(progressBarInner);
+  progressContainer.appendChild(progressText);
+  progressContainer.appendChild(progressBarOuter);
+  document.body.appendChild(progressContainer);
+}
+
+// Helper function to update progress
+function updateProgress(progress: number) {
+  const percentage = Math.round(progress * 100);
+  // Remove transition for 100% to ensure it completes
+  if (percentage === 100) {
+    progressBarInner.style.transition = 'none';
+  }
+  
+  // Update both the width and text in the same frame
+  const width = `${percentage}%`;
+  const text = `Loading PLY file... ${percentage}%`;
+  
+  // Ensure both updates happen in the same frame
+  requestAnimationFrame(() => {
+    progressBarInner.style.width = width;
+    progressText.textContent = text;
+  });
+}
+
+// Also, let's reset the progress bar when starting a new load
+function resetProgress() {
+  progressBarInner.style.width = '0%';
+  progressText.textContent = 'Loading PLY file... 0%';
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
   // Create the WebGL viewer
   const viewer = new Viewer('app');
   
@@ -22,19 +89,100 @@ document.addEventListener('DOMContentLoaded', () => {
     viewer.resize(width, height);
   });
   
-  // Add UI controls
-  addControls(viewer, camera);
+  // Get URL parameters
+  const urlParams = new URLSearchParams(window.location.search);
+  const plyUrl = urlParams.get('url') || 'https://huggingface.co/samuelm2/voxel-data/resolve/main/pumpkin_600k.ply';
+  const showLoadingUI = urlParams.get('showLoadingUI') === 'true';
+
+  // Add UI controls and get info element
+  const infoDisplay = addControls();
   
-  // Add PLY upload UI
-  addPLYUploadUI(viewer, camera);
+  // Replace the progress bar creation code with:
+  createProgressBar();
+
+  // Only add PLY upload UI if showLoadingUI is true
+  if (showLoadingUI) {
+    addPLYUploadUI(viewer, camera);
+  }
+
+  // Auto-load the PLY file
+  try {
+    const startTime = performance.now();
+    progressContainer.style.display = 'block';
+    resetProgress();
+
+    const plyData = await LoadPLY.loadFromUrl(plyUrl, (progress) => {
+      updateProgress(progress);
+    });
+
+    const loadTime = ((performance.now() - startTime) / 1000).toFixed(2);
+    progressContainer.style.display = 'none';
+
+    const fileName = plyUrl.split('/').pop() || 'remote-ply';
+    
+    if (plyData.sceneCenter && plyData.sceneExtent) {
+      viewer.setSceneParameters(plyData.sceneCenter, plyData.sceneExtent);
+    }
+
+    viewer.loadPointCloud(
+      plyData.vertices,
+      plyData.sh0Values,
+      plyData.octlevels,
+      plyData.octpaths,
+      plyData.gridValues,
+      plyData.shRestValues
+    );
+
+    let octlevelInfo = '';
+    if (plyData.octlevels && plyData.octlevels.length > 0) {
+      const minOct = plyData.octlevels.reduce((min: number, val: number) => val < min ? val : min, plyData.octlevels[0]);
+      const maxOct = plyData.octlevels.reduce((max: number, val: number) => val > max ? val : max, plyData.octlevels[0]);
+      octlevelInfo = `\nOctlevels: ${minOct} to ${maxOct}`;
+    }
+
+    // Update both info displays if they exist
+    const infoText = `Loaded: ${fileName}
+      Vertices: ${plyData.vertexCount.toLocaleString()}
+      Load time: ${loadTime}s${octlevelInfo}`;
+    
+    infoDisplay.textContent = infoText;
+    
+    if (showLoadingUI) {
+      const uploadInfoElement = document.getElementById('ply-info');
+      if (uploadInfoElement) {
+        uploadInfoElement.textContent = infoText;
+      }
+    }
+
+    viewer.setSceneTransformMatrix([0.9964059591293335,0.07686585187911987,0.03559183329343796,0,0.06180455908179283,-0.9470552206039429,0.3150659501552582,0,0.05792524665594101,-0.3117338716983795,-0.9484022259712219,0,0,0,0,1]);
+    
+    if (plyData.sceneCenter && plyData.sceneExtent) {
+      camera.setPosition(-5.3627543449401855,-0.40146273374557495,3.546692371368408);      
+      camera.setTarget(
+        plyData.sceneCenter[0],
+        plyData.sceneCenter[1],
+        plyData.sceneCenter[2]
+      );
+    }
+  } catch (error: any) {
+    progressContainer.style.display = 'none';
+    console.error('Error loading initial PLY:', error);
+    const errorText = `Error loading PLY: ${error.message}`;
+    infoDisplay.textContent = errorText;
+    
+    if (showLoadingUI) {
+      const uploadInfoElement = document.getElementById('ply-info');
+      if (uploadInfoElement) {
+        uploadInfoElement.textContent = errorText;
+      }
+    }
+  }
 });
-
-
 
 /**
  * Add some basic UI controls for the demo
  */
-function addControls(viewer: Viewer, camera: Camera) {
+function addControls() {
   // Create a simple control panel
   const controls = document.createElement('div');
   controls.style.position = 'absolute';
@@ -46,19 +194,20 @@ function addControls(viewer: Viewer, camera: Camera) {
   controls.style.fontFamily = 'sans-serif';
   controls.style.borderRadius = '5px';
   
-  // Add simple camera control instructions
+  // Add simple camera control instructions and info section
   controls.innerHTML = `
     <h3>Camera Controls</h3>
     <ul style="padding-left: 20px; margin: 5px 0;">
       <li>Drag mouse to orbit camera</li>
       <li>Scroll to zoom in/out</li>
     </ul>
+    <div id="model-info" style="margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.3); font-size: 12px;"></div>
   `;
   
   // Add the controls to the document
   document.body.appendChild(controls);
   
-  // No event listeners needed for the descriptive controls
+  return document.getElementById('model-info')!;
 }
 
 /**
@@ -191,14 +340,20 @@ function addPLYUploadUI(viewer: Viewer, camera: Camera) {
       urlButton.disabled = true;
       urlButton.textContent = 'Loading...';
       infoElement.textContent = 'Loading PLY from URL...';
+      progressContainer.style.display = 'block';
+      resetProgress();
 
       const startTime = performance.now();
-      const plyData = await LoadPLY.loadFromUrl(url);
+      const plyData = await LoadPLY.loadFromUrl(url, (progress) => {
+        updateProgress(progress);
+      });
       const loadTime = ((performance.now() - startTime) / 1000).toFixed(2);
 
+      progressContainer.style.display = 'none';
       const fileName = url.split('/').pop() || 'remote-ply';
       loadPLYData(plyData, loadTime, fileName);
     } catch (error: any) {
+      progressContainer.style.display = 'none';
       infoElement.textContent = `Error loading PLY: ${error.message}`;
       console.error('PLY loading error:', error);
     } finally {

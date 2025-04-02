@@ -17,13 +17,43 @@ export class LoadPLY {
   /**
    * Load a PLY file from a URL
    */
-  public static async loadFromUrl(url: string): Promise<PLYData> {
+  public static async loadFromUrl(url: string, onProgress?: (progress: number) => void): Promise<PLYData> {
     const response = await fetch(url);
     if (!response.ok) {
       throw new Error(`Failed to load PLY file: ${response.statusText}`);
     }
     
-    const arrayBuffer = await response.arrayBuffer();
+    const contentLength = parseInt(response.headers.get('Content-Length') || '0');
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error('Failed to get response reader');
+    }
+
+    // Read the response as chunks
+    const chunks: Uint8Array[] = [];
+    let receivedLength = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      chunks.push(value);
+      receivedLength += value.length;
+
+      if (contentLength && onProgress) {
+        onProgress(receivedLength / contentLength);
+      }
+    }
+
+    // Combine all chunks into a single array buffer
+    const arrayBuffer = new ArrayBuffer(receivedLength);
+    const view = new Uint8Array(arrayBuffer);
+    let position = 0;
+    for (const chunk of chunks) {
+      view.set(chunk, position);
+      position += chunk.length;
+    }
+    
     return LoadPLY.parse(arrayBuffer);
   }
   
