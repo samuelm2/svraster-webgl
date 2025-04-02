@@ -187,6 +187,9 @@ export class Viewer {
 
     this.initWebGLConstants();
 
+    // Add keyboard controls for scene rotation
+    this.initKeyboardControls();
+
     this.render(0);
 
   }
@@ -365,23 +368,23 @@ export class Viewer {
         vec3 sh1_1 = vec3(sh1_part1.zw, sh1_part2.x);
         vec3 sh1_2 = sh1_part2.yzw;
     
-        // Scale the vertex position by instance scale
-        vec4 scaledPosition = vec4(aVertexPosition.xyz * instanceScale, aVertexPosition.w);
+        // Scale the vertex position for this instance
+        vec3 scaledVertexPos = aVertexPosition.xyz * instanceScale;
         
-        // Transform instance offset by scene transform matrix
-        vec4 transformedOffset = uSceneTransformMatrix * vec4(instancePosition, 1.0);
+        // Position vertex relative to instance position
+        vec3 worldVertexPos = scaledVertexPos + instancePosition;
         
-        // Position is scaled vertex position + transformed instance offset
-        vec4 instancePos = scaledPosition + vec4(transformedOffset.xyz, 0.0);
+        // Apply scene transform to the entire positioned vertex
+        vec4 transformedPos = uSceneTransformMatrix * vec4(worldVertexPos, 1.0);
         
         // Calculate final position
-        gl_Position = uProjectionMatrix * uViewMatrix * instancePos;
+        gl_Position = uProjectionMatrix * uViewMatrix * transformedPos;
         
-        // Pass world position of the vertex
-        vWorldPos = instancePos.xyz;
+        // Pass transformed world position of the vertex to fragment shader
+        vWorldPos = transformedPos.xyz;
         
-        // Calculate and pass voxel center
-        vVoxelCenter = transformedOffset.xyz;
+        // Calculate voxel center in transformed space
+        vVoxelCenter = (uSceneTransformMatrix * vec4(instancePosition, 1.0)).xyz;
         
         // Pass scale to fragment shader
         vScale = instanceScale;
@@ -413,6 +416,7 @@ export class Viewer {
       uniform vec3 uCameraPosition;
       uniform mat4 uViewMatrix;
       uniform mat4 uInverseTransformMatrix;
+      uniform vec3 uTransformFlips; // x, y, z components will be -1 for flipped axes, 1 for unchanged
       
       out vec4 fragColor;
       
@@ -420,20 +424,34 @@ export class Viewer {
       vec2 rayBoxIntersection(vec3 rayOrigin, vec3 rayDir, vec3 boxCenter, float boxScale) {
         const float EPSILON = 1e-3;
         
-        // Slightly expand the box to handle boundary cases
-        vec3 boxMin = boxCenter - vec3(boxScale * 0.5) - vec3(EPSILON);
-        vec3 boxMax = boxCenter + vec3(boxScale * 0.5) + vec3(EPSILON);
+        // Get box dimensions
+        vec3 halfExtent = vec3(boxScale * 0.5);
         
-        vec3 invDir = 1.0 / rayDir;
-        vec3 tMin = (boxMin - rayOrigin) * invDir;
-        vec3 tMax = (boxMax - rayOrigin) * invDir;
+        // For non-axis aligned boxes, we should transform the ray into box space
+        // rather than transforming the box into world space
+        
+        // 1. Create a coordinate system for the box (this is the inverse transform)
+        // This moves ray into the box's local space where it's axis-aligned
+        vec3 localRayOrigin = rayOrigin - boxCenter;
+        
+        // Apply inverse rotation (would be done by multiplying by inverse matrix)
+        // Since we're in the fragment shader, we can use the uniform
+        vec4 transformedOrigin = uInverseTransformMatrix * vec4(localRayOrigin, 0.0);
+        vec4 transformedDir = uInverseTransformMatrix * vec4(rayDir, 0.0);
+        
+        // Now perform standard AABB intersection in this space
+        vec3 invDir = 1.0 / transformedDir.xyz;
+        vec3 boxMin = -halfExtent;
+        vec3 boxMax = halfExtent;
+        
+        vec3 tMin = (boxMin - transformedOrigin.xyz) * invDir;
+        vec3 tMax = (boxMax - transformedOrigin.xyz) * invDir;
         vec3 t1 = min(tMin, tMax);
         vec3 t2 = max(tMin, tMax);
         float tNear = max(max(t1.x, t1.y), t1.z);
         float tFar = min(min(t2.x, t2.y), t2.z);
         
         // If camera is inside the box, tNear will be negative
-        // In this case, we should start sampling from the camera position
         tNear = max(0.0, tNear);
         
         return vec2(tNear, tFar);
@@ -864,6 +882,14 @@ export class Viewer {
     gl.uniform1i(gl.getUniformLocation(this.program!, 'uShTexture'), 2);
     gl.uniform2i(gl.getUniformLocation(this.program!, 'uShDims'), 
       this.shWidth, this.shHeight);
+    
+    // Add a uniform to pass transformation information to the fragment shader
+    const flipsX = this.sceneTransformMatrix[0] < 0 ? -1 : 1;
+    const flipsY = this.sceneTransformMatrix[5] < 0 ? -1 : 1;
+    const flipsZ = this.sceneTransformMatrix[10] < 0 ? -1 : 1;
+
+    const transformFlipsLocation = gl.getUniformLocation(this.program, 'uTransformFlips');
+    gl.uniform3f(transformFlipsLocation, flipsX, flipsY, flipsZ);
     
     // Draw instanced geometry
     if (this.instanceCount <= 0) {
@@ -1624,5 +1650,56 @@ export class Viewer {
     
     // Return as Float32Array for WebGL
     return inverse as Float32Array;
+  }
+
+  /**
+   * Rotates the scene around the camera's forward axis (view direction)
+   * @param angleInRadians Angle to rotate in radians (positive = clockwise, negative = counterclockwise)
+   */
+  public rotateSceneAroundViewDirection(angleInRadians: number): void {
+    // Get camera position and target to determine view direction
+    const pos = this.camera.getPosition();
+    const target = this.camera.getTarget();
+    
+    // Calculate the forward vector
+    const forward = vec3.create();
+    vec3.subtract(forward, 
+      vec3.fromValues(target[0], target[1], target[2]), 
+      vec3.fromValues(pos[0], pos[1], pos[2])
+    );
+    vec3.normalize(forward, forward);
+    
+    // Create rotation matrix around the forward vector
+    const rotationMatrix = mat4.create();
+    mat4.fromRotation(rotationMatrix, angleInRadians, forward);
+    
+    // Create a new matrix for the result
+    const newTransform = mat4.create();
+    mat4.multiply(newTransform, rotationMatrix, this.sceneTransformMatrix);
+    
+    // Update the scene transform
+    this.setSceneTransformMatrix(newTransform as Float32Array);
+  }
+
+  /**
+   * Initialize keyboard controls
+   */
+  private initKeyboardControls(): void {
+    // Rotation amount per keypress in radians
+    const rotationAmount = 0.1; // About 5.7 degrees
+    
+    // Add event listener for keydown
+    window.addEventListener('keydown', (event) => {
+      switch (event.key.toLowerCase()) {
+        case 'q':
+          // Rotate counterclockwise around view direction
+          this.rotateSceneAroundViewDirection(-rotationAmount);
+          break;
+        case 'e':
+          // Rotate clockwise around view direction
+          this.rotateSceneAroundViewDirection(rotationAmount);
+          break;
+      }
+    });
   }
 }
