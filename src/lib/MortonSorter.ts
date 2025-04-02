@@ -6,13 +6,6 @@
  * Based on direction-dependent Morton order sorting as described in the paper
  */
 export class MortonSorter {
-  // Morton order bit masks for interleaving
-  private static readonly MASKS = [
-    0x9249249249249249n, // bits: 0 00 1 00 1 00 1 00 1 ...
-    0x2492492492492492n, // bits: 0 01 0 01 0 01 0 01 0 ...
-    0x4924924924924924n  // bits: 0 10 0 10 0 10 0 10 0 ...
-  ];
-
   // Maps ray sign bits to the appropriate permutation mapping
   // The 8 permutations of Morton order based on ray direction
   private static readonly PERMUTATION_MAPS = [
