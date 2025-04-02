@@ -108,14 +108,8 @@ function addPLYUploadUI(viewer: Viewer, camera: Camera) {
   // Helper function to update camera position based on PLY data
   const updateCameraPosition = (plyData: any) => {
     if (plyData.sceneCenter && plyData.sceneExtent) {
-      const viewDistance = plyData.sceneExtent * 2;
       
-      camera.setPosition(
-        plyData.sceneCenter[0], 
-        plyData.sceneCenter[1] + viewDistance * 0.5,  
-        plyData.sceneCenter[2] + viewDistance
-      );
-      
+      camera.setPosition(-5.3627543449401855,-0.40146273374557495,3.546692371368408);      
       camera.setTarget(
         plyData.sceneCenter[0], 
         plyData.sceneCenter[1], 
@@ -154,6 +148,7 @@ function addPLYUploadUI(viewer: Viewer, camera: Camera) {
       Vertices: ${plyData.vertexCount.toLocaleString()}${sizeInfo}
       Load time: ${loadTime}s${octlevelInfo}`;
 
+    viewer.setSceneTransformMatrix([0.9964059591293335,0.07686585187911987,0.03559183329343796,0,0.06180455908179283,-0.9470552206039429,0.3150659501552582,0,0.05792524665594101,-0.3117338716983795,-0.9484022259712219,0,0,0,0,1]);
     updateCameraPosition(plyData);
   };
 
