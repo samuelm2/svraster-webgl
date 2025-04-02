@@ -317,7 +317,7 @@ function addPLYUploadUI(viewer: Viewer, camera: Camera) {
 
     const sizeInfo = fileSize ? `\nSize: ${(fileSize / (1024 * 1024)).toFixed(2)} MB` : '';
     infoElement.textContent = `Loaded: ${fileName}
-      Vertices: ${plyData.vertexCount.toLocaleString()}${sizeInfo}
+      Voxels: ${plyData.vertexCount.toLocaleString()}${sizeInfo}
       Load time: ${loadTime}s${octlevelInfo}`;
 
     viewer.setSceneTransformMatrix([0.9964059591293335,0.07686585187911987,0.03559183329343796,0,0.06180455908179283,-0.9470552206039429,0.3150659501552582,0,0.05792524665594101,-0.3117338716983795,-0.9484022259712219,0,0,0,0,1]);
