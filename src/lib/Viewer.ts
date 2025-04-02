@@ -1788,18 +1788,99 @@ export class Viewer {
     // Rotation amount per keypress in radians
     const rotationAmount = 0.1; // About 5.7 degrees
     
+    // Movement speed (adjust this value to change movement sensitivity)
+    const moveSpeed = 0.1;
+    
+    // Track which keys are currently pressed
+    const pressedKeys = new Set<string>();
+    
     // Add event listener for keydown
     window.addEventListener('keydown', (event) => {
-      switch (event.key.toLowerCase()) {
-        case 'q':
-          // Rotate counterclockwise around view direction
-          this.rotateSceneAroundViewDirection(-rotationAmount);
-          break;
-        case 'e':
-          // Rotate clockwise around view direction
-          this.rotateSceneAroundViewDirection(rotationAmount);
-          break;
-      }
+        pressedKeys.add(event.key.toLowerCase());
+        
+        switch (event.key.toLowerCase()) {
+            case 'q':
+                this.rotateSceneAroundViewDirection(-rotationAmount);
+                break;
+            case 'e':
+                this.rotateSceneAroundViewDirection(rotationAmount);
+                break;
+        }
     });
+    
+    // Add event listener for keyup
+    window.addEventListener('keyup', (event) => {
+        pressedKeys.delete(event.key.toLowerCase());
+    });
+    
+    // Add continuous movement update
+    const updateMovement = () => {
+        const pos = this.camera.getPosition();
+        const target = this.camera.getTarget();
+        
+        // Calculate forward vector (from camera to target)
+        const forward = vec3.create();
+        vec3.subtract(forward, 
+            vec3.fromValues(target[0], target[1], target[2]),
+            vec3.fromValues(pos[0], pos[1], pos[2])
+        );
+        vec3.normalize(forward, forward);
+        
+        // Calculate right vector (cross product of forward and up)
+        const up = vec3.fromValues(0, 1, 0);
+        const right = vec3.create();
+        vec3.cross(right, forward, up);
+        vec3.normalize(right, right);
+        
+        let moveX = 0;
+        let moveY = 0;
+        let moveZ = 0;
+        
+        // Check for WASD and arrow keys
+        if (pressedKeys.has('w') || pressedKeys.has('arrowup')) {
+            // Move in forward direction
+            moveX += forward[0] * moveSpeed;
+            moveY += forward[1] * moveSpeed;
+            moveZ += forward[2] * moveSpeed;
+        }
+        if (pressedKeys.has('s') || pressedKeys.has('arrowdown')) {
+            // Move in backward direction
+            moveX -= forward[0] * moveSpeed;
+            moveY -= forward[1] * moveSpeed;
+            moveZ -= forward[2] * moveSpeed;
+        }
+        if (pressedKeys.has('a') || pressedKeys.has('arrowleft')) {
+            // Move left
+            moveX -= right[0] * moveSpeed;
+            moveY -= right[1] * moveSpeed;
+            moveZ -= right[2] * moveSpeed;
+        }
+        if (pressedKeys.has('d') || pressedKeys.has('arrowright')) {
+            // Move right
+            moveX += right[0] * moveSpeed;
+            moveY += right[1] * moveSpeed;
+            moveZ += right[2] * moveSpeed;
+        }
+        
+        // Space and Shift for up/down movement
+        if (pressedKeys.has(' ')) {
+            moveY += moveSpeed;
+        }
+        if (pressedKeys.has('shift')) {
+            moveY -= moveSpeed;
+        }
+        
+        // Apply movement if any keys were pressed
+        if (moveX !== 0 || moveY !== 0 || moveZ !== 0) {
+            this.camera.setPosition(pos[0] + moveX, pos[1] + moveY, pos[2] + moveZ);
+            this.camera.setTarget(target[0] + moveX, target[1] + moveY, target[2] + moveZ);
+        }
+        
+        // Continue the update loop
+        requestAnimationFrame(updateMovement);
+    };
+    
+    // Start the movement update loop
+    updateMovement();
   }
 }

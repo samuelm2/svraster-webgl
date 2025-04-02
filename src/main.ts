@@ -193,16 +193,39 @@ function addControls() {
   controls.style.color = 'white';
   controls.style.fontFamily = 'sans-serif';
   controls.style.borderRadius = '5px';
+  controls.style.fontSize = '14px';
   
-  // Add simple camera control instructions and info section
-  controls.innerHTML = `
-    <h3>Camera Controls</h3>
-    <ul style="padding-left: 20px; margin: 5px 0;">
-      <li>Drag mouse to orbit camera</li>
-      <li>Scroll to zoom in/out</li>
+  // Check if device is mobile
+  const isMobile = window.matchMedia('(max-width: 768px)').matches;
+  
+  // Different instructions based on device type
+  const controlInstructions = isMobile ? `
+    <h3 style="margin: 0 0 5px 0; font-size: 1em;">Controls</h3>
+    <ul style="padding-left: 15px; margin: 0;">
+      <li style="margin: 2px 0;">1 finger drag: orbit</li>
+      <li style="margin: 2px 0;">2 finger drag: pan/zoom</li>
     </ul>
-    <div id="model-info" style="margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.3); font-size: 12px;"></div>
+  ` : `
+    <h3 style="margin: 0 0 5px 0; font-size: 1em;">Controls</h3>
+    <ul style="padding-left: 15px; margin: 0;">
+      <li style="margin: 2px 0;">LClick + drag: orbit</li>
+      <li style="margin: 2px 0;">RClick + drag: pan</li>
+      <li style="margin: 2px 0;">Scroll: zoom</li>
+      <li style="margin: 2px 0;">WASD/Arrow Keys: move</li>
+    </ul>
   `;
+  
+  controls.innerHTML = `
+    ${controlInstructions}
+    <div id="model-info" style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, 0.3); font-size: 0.85em;"></div>
+  `;
+
+  // Add media query for mobile devices
+  if (isMobile) {
+    controls.style.fontSize = '12px';
+    controls.style.padding = '8px';
+    controls.style.maxWidth = '150px';
+  }
   
   // Add the controls to the document
   document.body.appendChild(controls);
