@@ -1,8 +1,8 @@
 # SVRaster WebGL Viewer
 
-A WebGL-based viewer for visualizing sparse voxel scenes from the Nvidia [Sparse Voxels Rasterization paper](https://svraster.github.io/). This viewer provides an interactive way to explore and visualize the voxel radiance field from the web.. You can try the viewer at [vid2scene.com/voxel](https://vid2scene.com/voxel)
+A WebGL-based viewer for visualizing sparse voxel scenes from the Nvidia [Sparse Voxels Rasterization paper](https://svraster.github.io/). This viewer provides an interactive way to explore and visualize the voxel radiance field from the web. You can try the viewer at [vid2scene.com/voxel](https://vid2scene.com/voxel)
 
-The rendering isn't exactly the same as the reference CUDA implementation, but its pretty similar. Also, only SH1 is supported.
+The rendering isn't exactly the same as the reference CUDA implementation, but it's pretty similar.
 
 ## Features
 
@@ -25,6 +25,7 @@ The rendering isn't exactly the same as the reference CUDA implementation, but i
 - The current implementation has only the most basic optimizations applied - there's significant room for performance improvements. Right now, the fragment shader is the bottleneck. Memory usage could also be lowered because nothing is quantized right now. If you have a perf improvement suggestion, please feel free to submit a PR! 
 - It runs at 60 FPS on my laptop with a Laptop 3080 GPU
 - It runs at about 15 to 20 FPS on my iPhone 13 Pro Max
+- Right now, only scenes trained with spherical harmonic degree 1 are supported (so 12 total SH coefficients per voxel). See the command below to train your SVRaster scene with sh degree 1. 
 
 
 You can pass ?samples=X as a URL param which will adjust the amount of density samples per ray in the fragment shader. The default is 3, but you can get a pretty good performance increase by decreasing this value, at the cost of a little less accurate rendering.
