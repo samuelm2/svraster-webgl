@@ -142,7 +142,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Update both info displays if they exist
     const infoText = `Loaded: ${fileName}
-      Vertices: ${plyData.vertexCount.toLocaleString()}
+      Voxels: ${plyData.vertexCount.toLocaleString()}
       Load time: ${loadTime}s${octlevelInfo}`;
     
     infoDisplay.textContent = infoText;

@@ -257,6 +257,10 @@ export class Viewer {
   private initShaders(): void {
     const gl = this.gl!;
     
+    // Get sample count from URL
+    const sampleCount = this.getSampleCountFromURL();
+    console.log(`Using ${sampleCount} samples for rendering`);
+    
     // Updated vertex shader to use texture fetches
     const vsSource = `#version 300 es
       precision mediump float;
@@ -399,10 +403,12 @@ export class Viewer {
       }
     `;
     
-    // Updated fragment shader with debug output
+    // Updated fragment shader with sampling loop
     const fsSource = `#version 300 es
-
       precision mediump float;
+      
+      // Define the sample count as a constant
+      const int SAMPLE_COUNT = ${sampleCount};
       
       in vec3 vWorldPos;
       in float vScale;
@@ -545,28 +551,28 @@ export class Viewer {
           
           // Calculate ray length in view space
           float viewSpaceRayLength = distance(entryPointView.xyz, exitPointView.xyz);
-          float stepLength = viewSpaceRayLength / 3.0;
+          float stepLength = viewSpaceRayLength / float(SAMPLE_COUNT);
           
-          // Get raw interpolated densities
-          vec3 samplePoint1 = rayOrigin + rayDir * (tNear + (tFar - tNear) * 0.25);
-          float rawDensity1 = trilinearInterpolation(samplePoint1, boxMin, boxMax, vDensity0, vDensity1);
-          
-          vec3 samplePoint2 = rayOrigin + rayDir * (tNear + (tFar - tNear) * 0.5);
-          float rawDensity2 = trilinearInterpolation(samplePoint2, boxMin, boxMax, vDensity0, vDensity1);
-          
-          vec3 samplePoint3 = rayOrigin + rayDir * (tNear + (tFar - tNear) * 0.75);
-          float rawDensity3 = trilinearInterpolation(samplePoint3, boxMin, boxMax, vDensity0, vDensity1);
-          
+          // Use a loop to calculate total density
+          float totalDensity = 0.0;
           
           // Apply explin after interpolation
-          // I'm not sure why, but the CUDA reference has a 100x scale factor.
+          // The CUDA reference has a 100x scale factor
           const float STEP_SCALE = 100.0;
-          float density1 = STEP_SCALE * stepLength * explin(rawDensity1);
-          float density2 = STEP_SCALE * stepLength * explin(rawDensity2);
-          float density3 = STEP_SCALE * stepLength * explin(rawDensity3);
-
-          float totalDensity = density1 + density2 + density3;
-                    
+          
+          for (int i = 0; i < SAMPLE_COUNT; i++) {
+            // Calculate sample position - evenly distribute samples
+            float t = tNear + (tFar - tNear) * (float(i) + 0.5) / float(SAMPLE_COUNT);
+            vec3 samplePoint = rayOrigin + rayDir * t;
+            
+            // Get density at sample point
+            float rawDensity = trilinearInterpolation(samplePoint, boxMin, boxMax, vDensity0, vDensity1);
+            
+            // Apply explin and accumulate
+            float density = STEP_SCALE * stepLength * explin(rawDensity);
+            totalDensity += density;
+          }
+          
           // Use view space ray length for Beer-Lambert law
           float alpha = 1.0 - exp(-totalDensity);
           
@@ -904,10 +910,10 @@ export class Viewer {
     gl.drawElementsInstanced(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_SHORT, 0, this.instanceCount);
     
     // Check for GL errors
-    const error = gl.getError();
-    if (error !== gl.NO_ERROR) {
-      console.error(`WebGL error: ${error}`);
-    }
+    // const error = gl.getError();
+    // if (error !== gl.NO_ERROR) {
+    //   console.error(`WebGL error: ${error}`);
+    // }
     
     // Unbind the VAO
     gl.bindVertexArray(null);
@@ -1221,10 +1227,10 @@ export class Viewer {
     gl.bindVertexArray(null);
     
     // Check for GL errors
-    const error = gl.getError();
-    if (error !== gl.NO_ERROR) {
-      console.error('WebGL error during index buffer update:', error);
-    }
+    // const error = gl.getError();
+    // if (error !== gl.NO_ERROR) {
+    //   console.error('WebGL error during index buffer update:', error);
+    // }
   }
 
   /**
@@ -1875,5 +1881,12 @@ export class Viewer {
     
     // Start the movement update loop
     updateMovement();
+  }
+
+  private getSampleCountFromURL(): number {
+    const urlParams = new URLSearchParams(window.location.search);
+    const sampleCount = parseInt(urlParams.get('samples') || '3', 10);
+    // Ensure the count is at least 1 and not too high for performance
+    return Math.max(1, Math.min(sampleCount, 64));
   }
 }
