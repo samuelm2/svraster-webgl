@@ -1,6 +1,6 @@
 # SVRaster WebGL Viewer
 
-A WebGL-based viewer for visualizing sparse voxel scenes from the [Sparse Voxels Rasterization paper](https://svraster.github.io/). This viewer provides an interactive way to explore and visualize the voxel radiance field from the web.. You can try the viewer at [vid2scene.com/voxel](https://vid2scene.com/voxel)
+A WebGL-based viewer for visualizing sparse voxel scenes from the Nvidia [Sparse Voxels Rasterization paper](https://svraster.github.io/). This viewer provides an interactive way to explore and visualize the voxel radiance field from the web.. You can try the viewer at [vid2scene.com/voxel](https://vid2scene.com/voxel)
 
 The rendering isn't exactly the same as the reference CUDA implementation, but its pretty similar. Also, only SH1 is supported.
 
@@ -41,7 +41,7 @@ The viewer supports a few URL parameters to customize its behavior:
 
 If you have your own SVRaster scenes that you'd like to visualize in this WebGL viewer, you can use this forked version of SVRaster that supports PLY export:
 
-1. Clone the repository: [github.com/samuelm2/svraster](https://github.com/samuelm2/svraster)
+1. Clone the forked SVRaster repository: [github.com/samuelm2/svraster](https://github.com/samuelm2/svraster)
 2. Run SVRaster with SH degree 1 to create a model compatible with this viewer:
    ```bash
    python train.py --source_path /PATH/TO/COLMAP/SFM/DIR --model_path outputs/pumpkin/ --sh_degree 1 --sh_degree_init 1 --subdivide_max_num 600000
