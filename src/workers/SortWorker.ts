@@ -1,5 +1,4 @@
-// Import DepthSorter instead of MortonSorter
-import { DepthSorter } from '../lib/DepthSorter';
+import { DistanceSorter } from '../lib/DistanceSorter';
 
 // Define message types
 interface SortRequest {
@@ -26,7 +25,7 @@ ctx.addEventListener('message', (event: MessageEvent) => {
   const data = event.data as SortRequest;
   
   if (data.type === 'sort') {
-    console.log(`SortWorker: Starting depth-based sort for ${data.positions.length / 3} voxels`);
+    console.log(`SortWorker: Starting distance-based sort for ${data.positions.length / 3} voxels`);
     
     const startTime = performance.now();
     
@@ -54,14 +53,14 @@ ctx.addEventListener('message', (event: MessageEvent) => {
                                          data.sceneTransformMatrix[14];
     }
     
-    // Use DepthSorter to sort the transformed voxels by distance from camera
-    const indices = DepthSorter.sortVoxels(
+    // Use DistanceSorter to sort the transformed voxels by distance from camera
+    const indices = DistanceSorter.sortVoxels(
       transformedPositions,
       data.cameraPosition
     );
     
     const sortTime = performance.now() - startTime;
-    console.log(`SortWorker: Depth-based sort complete in ${sortTime.toFixed(2)}ms, returning ${indices.length} indices`);
+    console.log(`SortWorker: Distance-based sort complete in ${sortTime.toFixed(2)}ms, returning ${indices.length} indices`);
     
     // Send back sorted indices
     const response: SortResponse = {

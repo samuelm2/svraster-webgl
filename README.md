@@ -21,10 +21,10 @@ The rendering isn't exactly the same as the reference CUDA implementation, but i
 
 ## Implementation and Performance Notes
 
-- This viewer uses a depth-based sorting approach rather than the ray direction-dependent Morton ordering described in the paper
+- This viewer uses a distance-based sorting approach rather than the ray direction-dependent Morton ordering described in the paper
 - The current implementation has only the most basic optimizations applied - there's significant room for performance improvements. Right now, the fragment shader is the bottleneck. Memory usage could also be lowered because nothing is quantized right now. If you have a perf improvement suggestion, please feel free to submit a PR! 
-- It runs at 60 FPS on my laptop with a Laptop 3080 GPU
-- It runs at about 15 to 20 FPS on my iPhone 13 Pro Max
+- It runs at ~60-80 FPS on my laptop with a Laptop 3080 GPU
+- It runs at about ~12-20 FPS on my iPhone 13 Pro Max
 - Right now, only scenes trained with spherical harmonic degree 1 are supported (so 12 total SH coefficients per voxel). See the command below to train your SVRaster scene with sh degree 1. 
 
 

@@ -1,4 +1,4 @@
-export class DepthSorter {
+export class DistanceSorter {
   // Static arrays that will be reused between calls
   private static BUCKET_COUNT = 256 * 256;
   private static counts: Uint32Array | null = null;
@@ -51,9 +51,10 @@ export class DepthSorter {
     let minDist = Infinity;
     let maxDist = -Infinity;
     
-    // Calculate squared distances and find min/max
-    const distances = new Float32Array(numVoxels);
+    // Calculate and store log distances directly instead of squared distances
+    const logDistances = new Float32Array(numVoxels);
     
+    // Compute squared distances and their logarithms
     for (let i = 0; i < numVoxels; i++) {
       const x = positions[i * 3];
       const y = positions[i * 3 + 1];
@@ -64,73 +65,57 @@ export class DepthSorter {
       const dz = z - cameraPosition[2];
       const distanceSquared = dx * dx + dy * dy + dz * dz;
 
-      distances[i] = distanceSquared;
+      // Store the log of the distance directly
+      const logDist = Math.log(distanceSquared);
+      logDistances[i] = logDist;
       
-      if (distanceSquared < minDist) minDist = distanceSquared;
-      if (distanceSquared > maxDist) maxDist = distanceSquared;
+      if (logDist < minDist) minDist = logDist;
+      if (logDist > maxDist) maxDist = logDist;
     }
     
-    // Use logarithmic scale to give more buckets to nearby objects
-    const logMin = Math.log(minDist);
-    const logMax = Math.log(maxDist);
-    const logRange = logMax - logMin;
+    const logRange = maxDist - minDist;
     
     // Scale factor for logarithmic mapping
     const distInv = (this.BUCKET_COUNT - 1) / (logRange || 1);
     
     // Count occurrences of each bucket using log scale (first pass)
     for (let i = 0; i < numVoxels; i++) {
-      // Use logarithmic mapping for better distribution
-      const logDist = Math.log(distances[i]);
+      // Reuse the pre-calculated log distance
       const bucketIndex = Math.min(
         this.BUCKET_COUNT - 1,
-        ((logDist - logMin) * distInv) | 0
+        ((logDistances[i] - minDist) * distInv) | 0
       );
       this.counts![bucketIndex]++;
     }
     
-    // Calculate starting positions (prefix sum)
-    this.starts![0] = 0;
-    for (let i = 1; i < this.BUCKET_COUNT; i++) {
-      this.starts![i] = this.starts![i - 1] + this.counts![i - 1];
+    // Calculate bucket positions with farthest buckets first
+    let position = 0;
+    const bucketStarts = new Uint32Array(this.BUCKET_COUNT);
+    for (let i = this.BUCKET_COUNT - 1; i >= 0; i--) {
+      bucketStarts[i] = position;
+      position += this.counts![i];
     }
     
-    // Copy starts to a working array that will be modified during distribution
-    const startsCopy = new Uint32Array(this.starts!);
+    // Reset counts for the second pass
+    this.counts!.fill(0);
     
-    // Distribute indices to final positions using log scale (second pass)
+    // Distribute indices in back-to-front order
     for (let i = 0; i < numVoxels; i++) {
-      const logDist = Math.log(distances[i]);
+      // Reuse the pre-calculated log distance again
       const bucketIndex = Math.min(
         this.BUCKET_COUNT - 1,
-        ((logDist - logMin) * distInv) | 0
+        ((logDistances[i] - minDist) * distInv) | 0
       );
-      // Place voxel index in the correct position
-      indices[startsCopy[bucketIndex]++] = i;
+      
+      // Calculate the position for this voxel
+      const pos = bucketStarts[bucketIndex] + this.counts![bucketIndex];
+      indices[pos] = i;
+      this.counts![bucketIndex]++;
     }
     
     // Store camera position for next call
     this.lastCameraPosition = [...cameraPosition];
     
-    // Since we want back-to-front (farther objects first), we need to reverse the result
-    this.reverseIndices(indices);
-    
     return indices;
-  }
-  
-  /**
-   * Reverses an array in-place
-   */
-  private static reverseIndices(arr: Uint32Array): void {
-    let left = 0;
-    let right = arr.length - 1;
-    
-    while (left < right) {
-      const temp = arr[left];
-      arr[left] = arr[right];
-      arr[right] = temp;
-      left++;
-      right--;
-    }
   }
 } 
