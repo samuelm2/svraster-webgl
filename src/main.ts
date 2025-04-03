@@ -216,6 +216,8 @@ function addControls() {
   `;
   
   controls.innerHTML = `
+    <h2 style="margin: 0 0 5px 0; font-size: 1.2em;">WebGL SVRaster Viewer</h2>
+    <a href="https://github.com/samusynth/svraster-webgl" style="text-decoration: underline; color: white; font-size: 0.85em; display: block; margin-bottom: 10px;">GitHub</a>
     ${controlInstructions}
     <div id="model-info" style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, 0.3); font-size: 0.85em;"></div>
   `;
