@@ -259,8 +259,8 @@ export class Viewer {
     
     // Updated vertex shader to use texture fetches
     const vsSource = `#version 300 es
-      precision highp float;
-      precision highp sampler2D;
+      precision mediump float;
+      precision mediump sampler2D;
       
       // Core attributes
       in vec4 aVertexPosition;
@@ -402,7 +402,7 @@ export class Viewer {
     // Updated fragment shader with debug output
     const fsSource = `#version 300 es
 
-      precision highp float;  // Changed from mediump to highp to match vertex shader
+      precision mediump float;
       
       in vec3 vWorldPos;
       in float vScale;
