@@ -74,7 +74,7 @@ The viewer supports a few URL parameters to customize its behavior:
 - `?url=https://example.com/myply.ply` - Loads a custom PLY file from the specified URL (default: pumpkin_600k.ply from HuggingFace here: https://huggingface.co/samuelm2/voxel-data/blob/main/pumpkin_600k.ply). For example, I also have a 1.2 million voxel pumpkin ply which you can load with this url: https://vid2scene.com/voxel/?url=https://huggingface.co/samuelm2/voxel-data/resolve/main/pumpkin_1200k.ply
 - `?showLoadingUI=true` - Shows the PLY file upload UI, allowing users to load their own files
 
-## How to Try Yourself
+## How to Generate Your Own Scenes
 
 If you have your own SVRaster scenes that you'd like to visualize in this WebGL viewer, you can use this forked version of SVRaster that supports PLY export:
 
