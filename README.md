@@ -18,6 +18,42 @@ The rendering isn't exactly the same as the reference CUDA implementation, but i
   - 2 finger drag: Pan/zoom
 - Performance metrics display (FPS counter)
 
+## How to Run
+
+### Prerequisites
+
+Before running the project, you need to have Node.js and NPM (Node Package Manager) installed:
+
+1. Install Node.js and NPM:
+   - Download and install from [nodejs.org](https://nodejs.org/)
+
+2. Verify installation:
+   ```bash
+   node --version
+   npm --version
+   ```
+
+### Running the Project
+
+To run this project locally:
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/samuelm2/svraster-webgl.git
+   cd svraster-webgl
+   ```
+
+2. Install dependencies:
+   ```bash
+   npm install
+   ```
+
+3. Start the development server:
+   ```bash
+   npm run dev
+   ```
+   This will start the Vite development server, typically at http://localhost:5173
+
 
 ## Implementation and Performance Notes
 
