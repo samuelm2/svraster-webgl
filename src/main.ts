@@ -8,6 +8,11 @@ let progressContainer: HTMLDivElement;
 let progressBarInner: HTMLDivElement;
 let progressText: HTMLDivElement;
 
+// Global references
+let currentViewer: Viewer;
+let currentCamera: Camera;
+let mainInfoDisplay: HTMLElement;
+
 // Create a function to initialize the progress bar
 function createProgressBar() {
   progressContainer = document.createElement('div');
@@ -70,114 +75,107 @@ function resetProgress() {
   progressText.textContent = 'Loading PLY file... 0%';
 }
 
-document.addEventListener('DOMContentLoaded', async () => {
-  // Create the WebGL viewer
-  const viewer = new Viewer('app');
-  
-  // Get direct access to the camera
-  const camera = viewer.getCamera();
-  
-  // Configure the camera for a nice view
-  camera.setPosition(0, 0, 5);   // Position away from the scene
-  camera.setTarget(0, 0, 0);     // Look at the center
-  
-
-  // Handle window resize events
-  window.addEventListener('resize', () => {
-    const width = window.innerWidth;
-    const height = window.innerHeight;
-    viewer.resize(width, height);
-  });
-  
-  // Get URL parameters
-  const urlParams = new URLSearchParams(window.location.search);
-  const plyUrl = urlParams.get('url') || 'https://huggingface.co/samuelm2/voxel-data/resolve/main/pumpkin_600k.ply';
-  const showLoadingUI = urlParams.get('showLoadingUI') === 'true';
-
-  // Add UI controls and get info element
-  const infoDisplay = addControls();
-  
-  // Replace the progress bar creation code with:
-  createProgressBar();
-
-  // Only add PLY upload UI if showLoadingUI is true
-  if (showLoadingUI) {
-    addPLYUploadUI(viewer, camera);
+// Process PLY data after loading
+function processPLYData(plyData: any, fileName: string, loadTime: string, fileSize?: number, infoElement?: HTMLElement) {
+  if (plyData.sceneCenter && plyData.sceneExtent) {
+    currentViewer.setSceneParameters(plyData.sceneCenter, plyData.sceneExtent);
   }
 
-  // Auto-load the PLY file
+  currentViewer.loadPointCloud(
+    plyData.vertices,
+    plyData.sh0Values,
+    plyData.octlevels,
+    plyData.octpaths,
+    plyData.gridValues,
+    plyData.shRestValues
+  );
+
+  let octlevelInfo = '';
+  if (plyData.octlevels && plyData.octlevels.length > 0) {
+    const minOct = plyData.octlevels.reduce((min: number, val: number) => val < min ? val : min, plyData.octlevels[0]);
+    const maxOct = plyData.octlevels.reduce((max: number, val: number) => val > max ? val : max, plyData.octlevels[0]);
+    octlevelInfo = `\nOctlevels: ${minOct} to ${maxOct}`;
+  }
+
+  const sizeInfo = fileSize ? `\nSize: ${(fileSize / (1024 * 1024)).toFixed(2)} MB` : '';
+  const infoText = `Loaded: ${fileName}
+    Voxels: ${plyData.vertexCount.toLocaleString()}${sizeInfo}
+    Load time: ${loadTime}s${octlevelInfo}`;
+  
+  // Update the main info display
+  mainInfoDisplay.textContent = infoText;
+  
+  // Also update the upload info element if provided
+  if (infoElement && infoElement !== mainInfoDisplay) {
+    infoElement.textContent = infoText;
+  }
+
+  currentViewer.setSceneTransformMatrix([0.9964059591293335,0.07686585187911987,0.03559183329343796,0,0.06180455908179283,-0.9470552206039429,0.3150659501552582,0,0.05792524665594101,-0.3117338716983795,-0.9484022259712219,0,0,0,0,1]);
+  
+  if (plyData.sceneCenter && plyData.sceneExtent) {
+    currentCamera.setPosition(-5.3627543449401855,-0.40146273374557495,3.546692371368408);      
+    currentCamera.setTarget(
+      plyData.sceneCenter[0],
+      plyData.sceneCenter[1],
+      plyData.sceneCenter[2]
+    );
+  }
+}
+
+// Load PLY from URL
+async function loadPLYFromUrl(url: string, infoElement: HTMLElement) {
   try {
-    const startTime = performance.now();
     progressContainer.style.display = 'block';
     resetProgress();
-
-    const plyData = await LoadPLY.loadFromUrl(plyUrl, (progress) => {
+    
+    const startTime = performance.now();
+    const plyData = await LoadPLY.loadFromUrl(url, (progress) => {
       updateProgress(progress);
     });
-
     const loadTime = ((performance.now() - startTime) / 1000).toFixed(2);
+    
     progressContainer.style.display = 'none';
-
-    const fileName = plyUrl.split('/').pop() || 'remote-ply';
     
-    if (plyData.sceneCenter && plyData.sceneExtent) {
-      viewer.setSceneParameters(plyData.sceneCenter, plyData.sceneExtent);
-    }
-
-    viewer.loadPointCloud(
-      plyData.vertices,
-      plyData.sh0Values,
-      plyData.octlevels,
-      plyData.octpaths,
-      plyData.gridValues,
-      plyData.shRestValues
-    );
-
-    let octlevelInfo = '';
-    if (plyData.octlevels && plyData.octlevels.length > 0) {
-      const minOct = plyData.octlevels.reduce((min: number, val: number) => val < min ? val : min, plyData.octlevels[0]);
-      const maxOct = plyData.octlevels.reduce((max: number, val: number) => val > max ? val : max, plyData.octlevels[0]);
-      octlevelInfo = `\nOctlevels: ${minOct} to ${maxOct}`;
-    }
-
-    // Update both info displays if they exist
-    const infoText = `Loaded: ${fileName}
-      Voxels: ${plyData.vertexCount.toLocaleString()}
-      Load time: ${loadTime}s${octlevelInfo}`;
+    const fileName = url.split('/').pop() || 'remote-ply';
+    processPLYData(plyData, fileName, loadTime, undefined, infoElement);
     
-    infoDisplay.textContent = infoText;
-    
-    if (showLoadingUI) {
-      const uploadInfoElement = document.getElementById('ply-info');
-      if (uploadInfoElement) {
-        uploadInfoElement.textContent = infoText;
-      }
-    }
-
-    viewer.setSceneTransformMatrix([0.9964059591293335,0.07686585187911987,0.03559183329343796,0,0.06180455908179283,-0.9470552206039429,0.3150659501552582,0,0.05792524665594101,-0.3117338716983795,-0.9484022259712219,0,0,0,0,1]);
-    
-    if (plyData.sceneCenter && plyData.sceneExtent) {
-      camera.setPosition(-5.3627543449401855,-0.40146273374557495,3.546692371368408);      
-      camera.setTarget(
-        plyData.sceneCenter[0],
-        plyData.sceneCenter[1],
-        plyData.sceneCenter[2]
-      );
-    }
+    return true;
   } catch (error: any) {
     progressContainer.style.display = 'none';
-    console.error('Error loading initial PLY:', error);
-    const errorText = `Error loading PLY: ${error.message}`;
-    infoDisplay.textContent = errorText;
+    console.error('Error loading PLY from URL:', error);
+    infoElement.textContent = `Error loading PLY: ${error.message}`;
     
-    if (showLoadingUI) {
-      const uploadInfoElement = document.getElementById('ply-info');
-      if (uploadInfoElement) {
-        uploadInfoElement.textContent = errorText;
-      }
+    // Update the main info display too if different from infoElement
+    if (infoElement !== mainInfoDisplay) {
+      mainInfoDisplay.textContent = `Error loading PLY: ${error.message}`;
     }
+    
+    return false;
   }
-});
+}
+
+// Load PLY from File
+async function loadPLYFromFile(file: File, infoElement: HTMLElement) {
+  try {
+    const startTime = performance.now();
+    const plyData = await LoadPLY.loadFromFile(file);
+    const loadTime = ((performance.now() - startTime) / 1000).toFixed(2);
+    
+    processPLYData(plyData, file.name, loadTime, file.size, infoElement);
+    
+    return true;
+  } catch (error: any) {
+    console.error('Error loading PLY from file:', error);
+    infoElement.textContent = `Error loading PLY: ${error.message}`;
+    
+    // Update the main info display too if different from infoElement
+    if (infoElement !== mainInfoDisplay) {
+      mainInfoDisplay.textContent = `Error loading PLY: ${error.message}`;
+    }
+    
+    return false;
+  }
+}
 
 /**
  * Add some basic UI controls for the demo
@@ -238,7 +236,7 @@ function addControls() {
 /**
  * Add PLY file upload UI
  */
-function addPLYUploadUI(viewer: Viewer, camera: Camera) {
+function addPLYUploadUI() {
   // Create a file upload container
   const uploadContainer = document.createElement('div');
   uploadContainer.style.position = 'absolute';
@@ -279,80 +277,6 @@ function addPLYUploadUI(viewer: Viewer, camera: Camera) {
   const urlButton = document.getElementById('load-url') as HTMLButtonElement;
   const infoElement = document.getElementById('ply-info')!;
 
-  // Helper function to update camera position based on PLY data
-  const updateCameraPosition = (plyData: any) => {
-    if (plyData.sceneCenter && plyData.sceneExtent) {
-      
-      camera.setPosition(-5.3627543449401855,-0.40146273374557495,3.546692371368408);      
-      camera.setTarget(
-        plyData.sceneCenter[0], 
-        plyData.sceneCenter[1], 
-        plyData.sceneCenter[2]
-      );
-    } else {
-      camera.setPosition(0, 0, 5);
-      camera.setTarget(0, 0, 0);
-    }
-  };
-
-  // Helper function to load PLY data into viewer
-  const loadPLYData = (plyData: any, loadTime: string, fileName: string, fileSize?: number) => {
-    if (plyData.sceneCenter && plyData.sceneExtent) {
-      viewer.setSceneParameters(plyData.sceneCenter, plyData.sceneExtent);
-    }
-
-    viewer.loadPointCloud(
-      plyData.vertices, 
-      plyData.sh0Values, 
-      plyData.octlevels, 
-      plyData.octpaths, 
-      plyData.gridValues,
-      plyData.shRestValues
-    );
-
-    let octlevelInfo = '';
-    if (plyData.octlevels && plyData.octlevels.length > 0) {
-      const minOct = plyData.octlevels.reduce((min: number, val: number) => val < min ? val : min, plyData.octlevels[0]);
-      const maxOct = plyData.octlevels.reduce((max: number, val: number) => val > max ? val : max, plyData.octlevels[0]);
-      octlevelInfo = `\nOctlevels: ${minOct} to ${maxOct}`;
-    }
-
-    const sizeInfo = fileSize ? `\nSize: ${(fileSize / (1024 * 1024)).toFixed(2)} MB` : '';
-    infoElement.textContent = `Loaded: ${fileName}
-      Voxels: ${plyData.vertexCount.toLocaleString()}${sizeInfo}
-      Load time: ${loadTime}s${octlevelInfo}`;
-
-    viewer.setSceneTransformMatrix([0.9964059591293335,0.07686585187911987,0.03559183329343796,0,0.06180455908179283,-0.9470552206039429,0.3150659501552582,0,0.05792524665594101,-0.3117338716983795,-0.9484022259712219,0,0,0,0,1]);
-    updateCameraPosition(plyData);
-  };
-
-  // Handle file input with button click
-  fileButton.addEventListener('click', async () => {
-    if (!fileInput.files || fileInput.files.length === 0) {
-      alert('Please select a file first');
-      return;
-    }
-
-    const file = fileInput.files[0];
-    try {
-      fileButton.disabled = true;
-      fileButton.textContent = 'Loading...';
-      infoElement.textContent = 'Loading PLY file...';
-
-      const startTime = performance.now();
-      const plyData = await LoadPLY.loadFromFile(file);
-      const loadTime = ((performance.now() - startTime) / 1000).toFixed(2);
-      
-      loadPLYData(plyData, loadTime, file.name, file.size);
-    } catch (error: any) {
-      infoElement.textContent = `Error loading PLY: ${error.message}`;
-      console.error('PLY loading error:', error);
-    } finally {
-      fileButton.disabled = false;
-      fileButton.textContent = 'Load File';
-    }
-  });
-
   // Handle URL input
   urlButton.addEventListener('click', async () => {
     const url = urlInput.value.trim();
@@ -365,25 +289,75 @@ function addPLYUploadUI(viewer: Viewer, camera: Camera) {
       urlButton.disabled = true;
       urlButton.textContent = 'Loading...';
       infoElement.textContent = 'Loading PLY from URL...';
-      progressContainer.style.display = 'block';
-      resetProgress();
-
-      const startTime = performance.now();
-      const plyData = await LoadPLY.loadFromUrl(url, (progress) => {
-        updateProgress(progress);
-      });
-      const loadTime = ((performance.now() - startTime) / 1000).toFixed(2);
-
-      progressContainer.style.display = 'none';
-      const fileName = url.split('/').pop() || 'remote-ply';
-      loadPLYData(plyData, loadTime, fileName);
-    } catch (error: any) {
-      progressContainer.style.display = 'none';
-      infoElement.textContent = `Error loading PLY: ${error.message}`;
-      console.error('PLY loading error:', error);
+      
+      await loadPLYFromUrl(url, infoElement);
     } finally {
       urlButton.disabled = false;
       urlButton.textContent = 'Load URL';
     }
   });
+
+  // Handle file input
+  fileButton.addEventListener('click', async () => {
+    if (!fileInput.files || fileInput.files.length === 0) {
+      alert('Please select a file first');
+      return;
+    }
+
+    const file = fileInput.files[0];
+    try {
+      fileButton.disabled = true;
+      fileButton.textContent = 'Loading...';
+      infoElement.textContent = 'Loading PLY file...';
+      
+      await loadPLYFromFile(file, infoElement);
+    } finally {
+      fileButton.disabled = false;
+      fileButton.textContent = 'Load File';
+    }
+  });
 }
+
+document.addEventListener('DOMContentLoaded', async () => {
+  // Create the WebGL viewer
+  const viewer = new Viewer('app');
+  currentViewer = viewer;
+  
+  // Get direct access to the camera
+  const camera = viewer.getCamera();
+  currentCamera = camera;
+  
+  // Configure the camera for a nice view
+  camera.setPosition(0, 0, 5);   // Position away from the scene
+  camera.setTarget(0, 0, 0);     // Look at the center
+  
+  // Handle window resize events
+  window.addEventListener('resize', () => {
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    viewer.resize(width, height);
+  });
+  
+  // Get URL parameters
+  const urlParams = new URLSearchParams(window.location.search);
+  const plyUrl = urlParams.get('url') || 'https://huggingface.co/samuelm2/voxel-data/resolve/main/pumpkin_600k.ply';
+  const showLoadingUI = urlParams.get('showLoadingUI') === 'true';
+
+  // Add UI controls and get info element
+  const infoDisplay = addControls();
+  mainInfoDisplay = infoDisplay;
+  
+  // Create progress bar
+  createProgressBar();
+
+  // Only add PLY upload UI if showLoadingUI is true
+  if (showLoadingUI) {
+    // Add UI 
+    addPLYUploadUI();
+    // Set initial info text
+    infoDisplay.textContent = 'Please use the controls in the top right to load a PLY file.';
+  } else {
+    // Auto-load the PLY file if showLoadingUI is false
+    await loadPLYFromUrl(plyUrl, infoDisplay);
+  }
+});
