@@ -101,9 +101,8 @@ def link_grid_pts(octpath, octlevel):
         results = list(tqdm(pool.imap(process_func, range(N), chunksize=max(1, N//num_cores)), 
                             total=N, desc="Generating grid point coordinates"))
     
-    # Stack results
     gridpts = np.array(results)
-    # # else:
+    
     # print("Processing grid points...")
     # gridpts = np.zeros((N, 8, 3), dtype=np.int64)
     # for i in tqdm(range(N), desc="Building grid points"):
@@ -233,8 +232,6 @@ def main():
     parser = argparse.ArgumentParser(description='Convert sparse voxel model PT file to PLY format')
     parser.add_argument('input_path', type=str, help='Path to the model.pt file')
     parser.add_argument('output_path', type=str, help='Path where to save the PLY file')
-    parser.add_argument('--cpu', action='store_true', help='Use CPU for processing')
-    parser.add_argument('--no-parallel', action='store_true', help='Disable parallel processing')
     
     args = parser.parse_args()
     
