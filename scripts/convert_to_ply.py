@@ -239,7 +239,7 @@ def main():
         # This is important for multiprocessing on Windows
         multiprocessing.freeze_support()
     
-    convert_to_ply(args.input_path, args.output_path, args.cpu)
+    convert_to_ply(args.input_path, args.output_path)
 
 if __name__ == "__main__":
     # This is important for multiprocessing on Windows
